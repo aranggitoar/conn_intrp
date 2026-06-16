@@ -26,7 +26,7 @@ import math
 import torch
 from pathlib import Path
 from torch.nn import functional as F
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 from .models.base import ModelAdapter
 from .output import save_json

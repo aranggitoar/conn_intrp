@@ -29,7 +29,7 @@ import math
 import torch
 import numpy as np
 from pathlib import Path
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 from .data import best_anls
 from .models.base import ModelAdapter
