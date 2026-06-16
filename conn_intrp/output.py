@@ -33,10 +33,15 @@ def fs_safe(name: str) -> str:
 
 
 def make_run_dir(
-    base: str | Path, model_name: str, method: str, tag: str | None = None
+    base: str | Path, model_name: str, method: str,
+    tag: str | None = None, *, resume: bool = False,
 ) -> Path:
     """
-    Create a timestamped output directory.
+    Create a timestamped output directory, or resume the latest one.
+
+    When *resume* is ``True``, returns the most recent existing directory
+    that matches ``{model_name}_{method}_*`` under *base*. Falls back to
+    creating a new directory if none exists.
 
     :param base: Parent directory for all runs.
     :type base: str | Path
@@ -46,9 +51,17 @@ def make_run_dir(
     :type method: str
     :param tag: Optional suffix for the directory name.
     :type tag: str | None
-    :returns: Path to the created directory.
+    :param resume: If ``True``, reuse the latest matching run directory.
+    :type resume: bool
+    :returns: Path to the created or resumed directory.
     :rtype: Path
     """
+    if resume:
+        existing = find_latest_run(base, model_name, method)
+        if existing is not None:
+            print(f"Resuming run: {existing}")
+            return existing
+
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     name = f"{model_name}_{method}_{ts}"
     if tag:
