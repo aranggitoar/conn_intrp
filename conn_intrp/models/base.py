@@ -252,8 +252,8 @@ class ModelAdapter:
         :returns: Connector output embeddings.
         :rtype: torch.Tensor
         """
-        hidden = self.pre_svd_forward(vision_out)
-        bias = self.proj_bias.to(hidden.dtype) if self.proj_bias is not None else None
+        hidden = self.pre_svd_forward(vision_out).to(W_masked.dtype)
+        bias = self.proj_bias.to(W_masked.dtype) if self.proj_bias is not None else None
         return F.linear(hidden, W_masked, bias)
 
     def compute_coefficients(self, inputs: dict) -> torch.Tensor:

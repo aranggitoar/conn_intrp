@@ -88,8 +88,8 @@ class SmolVLM2Adapter(ModelAdapter):
         self, vision_out: torch.Tensor, layer_name: str,
         W_masked: torch.Tensor,
     ) -> torch.Tensor:
-        hidden = self.pre_svd_forward(vision_out)
-        bias = self.proj_bias.to(hidden.dtype) if self.proj_bias is not None else None
+        hidden = self.pre_svd_forward(vision_out).to(W_masked.dtype)
+        bias = self.proj_bias.to(W_masked.dtype) if self.proj_bias is not None else None
         return F.linear(hidden, W_masked, bias)
 
     def preprocess(self, batch: list[dict], image_base_path: Path) -> dict:
