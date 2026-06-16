@@ -58,6 +58,36 @@ def make_run_dir(
     return run_dir
 
 
+def find_latest_run(
+    base: str | Path, model_name: str, method: str,
+) -> Path | None:
+    """
+    Find the most recent run directory for a given model and method.
+
+    Scans *base* for directories matching ``{model_name}_{method}_*``
+    and returns the latest by timestamp. Returns ``None`` if no match.
+
+    :param base: Parent directory for all runs.
+    :type base: str | Path
+    :param model_name: Short model identifier (e.g. ``"smolvlm2"``).
+    :type model_name: str
+    :param method: Pipeline phase (e.g. ``"dm"``, ``"ablation"``).
+    :type method: str
+    :returns: Path to the latest matching run directory, or ``None``.
+    :rtype: Path | None
+    """
+    base = Path(base)
+    if not base.exists():
+        return None
+    prefix = f"{model_name}_{method}_"
+    candidates = sorted(
+        (d for d in base.iterdir() if d.is_dir() and d.name.startswith(prefix)),
+        key=lambda d: d.name,
+        reverse=True,
+    )
+    return candidates[0] if candidates else None
+
+
 def save_json(path: str | Path, data: dict) -> None:
     """
     Serialize *data* to JSON, converting tensors and ndarrays automatically.

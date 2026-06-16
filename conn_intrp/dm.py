@@ -61,18 +61,33 @@ def run_dm(
     """
     layers = adapter.svd_layers
 
-    save_json(run_dir / "metadata.json", dict(
-        model=adapter.model_name,
-        layers=[l.name for l in layers],
-        sparsity_coef=sparsity_coef,
-        lr=lr,
-        epochs=epochs,
-        step=step,
-        n_categories=len(data_categorized),
-        category_sizes={n: len(d) for n, d in data_categorized.items()},
-    ))
+    meta_path = run_dir / "metadata.json"
+    if not meta_path.exists():
+        save_json(meta_path, dict(
+            model=adapter.model_name,
+            layers=[l.name for l in layers],
+            sparsity_coef=sparsity_coef,
+            lr=lr,
+            epochs=epochs,
+            step=step,
+            n_categories=len(data_categorized),
+            category_sizes={n: len(d) for n, d in data_categorized.items()},
+        ))
+
+    completed = {
+        name for name in data_categorized
+        if all(
+            (run_dir / f"mask_{l.name}_{fs_safe(name)}.pt").exists()
+            for l in layers
+        )
+    }
+    if completed:
+        print(f"Resuming: skipping {len(completed)} completed categories")
 
     for name, data in tqdm(data_categorized.items(), desc="Learning masks"):
+        if name in completed:
+            print(f'  Skipping "{name}" (masks exist)')
+            continue
         masks = {}
         optimizers = {}
         stats = {}
@@ -219,6 +234,12 @@ def run_dm(
 
         for layer in layers:
             ln = layer.name
+            mask_path = run_dir / f"mask_{ln}_{fs_safe(name)}.pt"
+            mask_path.parent.mkdir(parents=True, exist_ok=True)
+            torch.save(masks[ln].data, mask_path)
+
+        for layer in layers:
+            ln = layer.name
             s = stats[ln]
             config = DirectionalMaskingConfig(
                 category=name,
@@ -235,6 +256,3 @@ def run_dm(
                 near_zero_per_epoch=s["near_zero"],
             )
             save_dm_run(config, masks[ln])
-            mask_path = run_dir / f"mask_{ln}_{fs_safe(name)}.pt"
-            mask_path.parent.mkdir(parents=True, exist_ok=True)
-            torch.save(masks[ln].data, mask_path)

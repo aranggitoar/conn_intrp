@@ -9,7 +9,9 @@ Pipeline phases:
 
 from .config import DirectionalMaskingConfig
 from .data import load_docvqa, HARNESS_PROMPT, best_anls, relaxed_anls
-from .output import make_run_dir, save_json, save_checkpoint, load_checkpoint
+from .output import (
+    make_run_dir, find_latest_run, save_json, save_checkpoint, load_checkpoint,
+)
 from .dm import run_dm
 from .ablation import compute_category_means, run_ablation
 from .spatial_probe import run_spatial_probe, plot_probe_heatmap, save_probe_heatmaps
@@ -21,6 +23,7 @@ __all__ = [
     "best_anls",
     "relaxed_anls",
     "make_run_dir",
+    "find_latest_run",
     "save_json",
     "save_checkpoint",
     "load_checkpoint",

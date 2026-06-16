@@ -67,7 +67,21 @@ def run_spatial_probe(
         "directions": directions,
     })
 
+    completed_probe = {
+        name for name in data_categorized
+        if (run_dir / fs_safe(name) / "probe_projections.pt").exists()
+    }
+    if completed_probe:
+        print(
+            f"Resuming probe: skipping "
+            f"{len(completed_probe)} completed categories"
+        )
+
     for name, data in tqdm(data_categorized.items(), desc="Spatial probe"):
+        if name in completed_probe:
+            print(f'  Skipping "{name}" (projections exist)')
+            continue
+
         length = len(data)
         projections = {}
         image_files = []

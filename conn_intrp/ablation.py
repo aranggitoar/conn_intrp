@@ -191,9 +191,23 @@ def run_ablation(
     :param run_dir: Output directory for this run.
     :type run_dir: Path
     """
+    completed_ablation = {
+        name for name in data_categorized
+        if (run_dir / fs_safe(name) / "anls_summary.json").exists()
+    }
+    if completed_ablation:
+        print(
+            f"Resuming ablation: skipping "
+            f"{len(completed_ablation)} completed categories"
+        )
+
     for name, data in tqdm(
         data_categorized.items(), desc="Ablation + ANLS"
     ):
+        if name in completed_ablation:
+            print(f'  Skipping "{name}" (results exist)')
+            continue
+
         length = len(data)
         cat_a_star = per_category_a_star[name]
 
