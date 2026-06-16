@@ -18,7 +18,7 @@ Analyses connector layers via SVD decomposition, directional masking, mean ablat
 pip install -e .
 ```
 
-Requires Python >= 3.10, PyTorch >= 2.0, and `transformers >= 4.40`.
+Requires Python >= 3.12, PyTorch >= 2.9, and `transformers >= 5.11`.
 
 ## Usage
 
