@@ -258,11 +258,13 @@ class InternVLAdapter(ModelAdapter):
     ) -> torch.Tensor:
         if layer_name == "linear_1":
             hidden = self.mmp.layer_norm(vision_out)
-            hidden = F.linear(hidden, W_masked, self.proj_bias1.to(hidden.dtype))
+            bias1 = self.proj_bias1.to(hidden.dtype) if self.proj_bias1 is not None else None
+            hidden = F.linear(hidden, W_masked, bias1)
             hidden = self.mmp.act(hidden)
             return self.mmp.linear_2(hidden)
         hidden = self.pre_svd_forward(vision_out)
-        return F.linear(hidden, W_masked, self.proj_bias.to(hidden.dtype))
+        bias = self.proj_bias.to(hidden.dtype) if self.proj_bias is not None else None
+        return F.linear(hidden, W_masked, bias)
 
     def preprocess(self, batch: list[dict], image_base_path: Path) -> dict:
         """

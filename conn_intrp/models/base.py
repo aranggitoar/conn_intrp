@@ -46,7 +46,7 @@ class SVDLayer:
     U: torch.Tensor
     S: torch.Tensor
     Vt: torch.Tensor
-    bias: torch.Tensor
+    bias: torch.Tensor | None
     n_dirs: int
 
 
@@ -80,7 +80,7 @@ class ModelAdapter:
     U: torch.Tensor
     S: torch.Tensor
     Vt: torch.Tensor
-    proj_bias: torch.Tensor
+    proj_bias: torch.Tensor | None
     vocab_size: int
     n_dirs: int
     n_patches: int
@@ -253,7 +253,8 @@ class ModelAdapter:
         :rtype: torch.Tensor
         """
         hidden = self.pre_svd_forward(vision_out)
-        return F.linear(hidden, W_masked, self.proj_bias.to(hidden.dtype))
+        bias = self.proj_bias.to(hidden.dtype) if self.proj_bias is not None else None
+        return F.linear(hidden, W_masked, bias)
 
     def compute_coefficients(self, inputs: dict) -> torch.Tensor:
         """
@@ -281,10 +282,10 @@ class ModelAdapter:
         :returns: Reconstructed connector output.
         :rtype: torch.Tensor
         """
-        return (
-            coefficients @ self.U.T.to(coefficients.dtype)
-            + self.proj_bias.to(coefficients.dtype)
-        )
+        out = coefficients @ self.U.T.to(coefficients.dtype)
+        if self.proj_bias is not None:
+            out = out + self.proj_bias.to(coefficients.dtype)
+        return out
 
     def compute_probe_projections(self, inputs: dict) -> dict[str, torch.Tensor]:
         """
