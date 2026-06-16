@@ -12,3 +12,4 @@ outputs/
 checkpoints/
 .ipynb_checkpoints/
 experiment_log.csv
+tmp/
