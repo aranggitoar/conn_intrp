@@ -79,6 +79,9 @@ class SmolVLM2Adapter(ModelAdapter):
             // self.scale_factor ** 2
         )
 
+        self._image_cache = {}
+        self._vision_cache = {}
+
     # --- Model-specific -------------------------------------------------------
 
     @property
@@ -107,16 +110,16 @@ class SmolVLM2Adapter(ModelAdapter):
         """
         prompts = []
         for datum in batch:
+            img_path = str(image_base_path / datum["image"])
+            if img_path not in self._image_cache:
+                self._image_cache[img_path] = (
+                    Image.open(img_path).convert("RGB")
+                )
             prompts.append([{
                 "role": "user",
                 "content": [
                     {"type": "text", "text": HARNESS_PROMPT},
-                    {
-                        "type": "image",
-                        "image": Image.open(
-                            image_base_path / datum["image"]
-                        ).convert("RGB"),
-                    },
+                    {"type": "image", "image": self._image_cache[img_path]},
                     {"type": "text", "text": datum["question"]},
                 ],
             }])

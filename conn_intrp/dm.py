@@ -88,31 +88,75 @@ def run_dm(
             }
 
         length = len(data)
+        epoch_cache = [] if epochs > 1 else None
 
         for ep in tqdm(range(epochs), desc=f'"{name}"'):
             epoch_kl = {ln: 0.0 for ln in masks}
             epoch_l1 = {ln: 0.0 for ln in masks}
             n_steps = 0
 
-            for i in tqdm(
+            for batch_idx, i in enumerate(tqdm(
                 range(0, length, step),
                 total=math.ceil(length / step),
                 desc=f"  epoch {ep + 1}",
                 leave=False,
-            ):
+            )):
                 batch = data[i:i + step]
-                inputs = adapter.preprocess(batch, image_base_path)
-                attention_mask = inputs["attention_mask"]
+                image_keys = [d['image'] for d in batch]
+                all_vision_cached = all(
+                    k in adapter._vision_cache for k in image_keys
+                )
 
-                with torch.no_grad():
-                    vision_out = adapter.extract_vision(inputs)
-                    conn_out_orig = adapter.run_connector(vision_out)
-                    text_embeds = adapter.get_text_embeds(inputs)
-                    embeds_orig = adapter.merge_embeds(
-                        inputs, text_embeds, conn_out_orig
+                if (epoch_cache is not None
+                        and ep > 0 and all_vision_cached):
+                    cached = epoch_cache[batch_idx]
+                    inputs = {
+                        'input_ids': cached['input_ids'].cuda(),
+                        'attention_mask': cached['attention_mask'].cuda(),
+                    }
+                    attention_mask = inputs['attention_mask']
+                    p_original = cached['p_original'].cuda()
+                    vision_out = torch.cat(
+                        [adapter._vision_cache[k].cuda()
+                         for k in image_keys]
                     )
-                    logits_orig = adapter.get_logits(embeds_orig, attention_mask)
-                    p_original = F.softmax(logits_orig, dim=-1)
+                    with torch.no_grad():
+                        text_embeds = adapter.get_text_embeds(inputs)
+                else:
+                    inputs = adapter.preprocess(batch, image_base_path)
+                    attention_mask = inputs["attention_mask"]
+
+                    with torch.no_grad():
+                        if all_vision_cached:
+                            vision_out = torch.cat(
+                                [adapter._vision_cache[k].cuda()
+                                 for k in image_keys]
+                            )
+                        else:
+                            vision_out = adapter.extract_vision(inputs)
+                            for j, k in enumerate(image_keys):
+                                if k not in adapter._vision_cache:
+                                    adapter._vision_cache[k] = (
+                                        vision_out[j:j + 1].cpu()
+                                    )
+
+                        conn_out_orig = adapter.run_connector(vision_out)
+                        text_embeds = adapter.get_text_embeds(inputs)
+                        embeds_orig = adapter.merge_embeds(
+                            inputs, text_embeds, conn_out_orig
+                        )
+                        logits_orig = adapter.get_logits(
+                            embeds_orig, attention_mask
+                        )
+                        p_original = F.softmax(logits_orig, dim=-1)
+                        del conn_out_orig, embeds_orig
+
+                    if epoch_cache is not None and ep == 0:
+                        epoch_cache.append({
+                            'input_ids': inputs['input_ids'].cpu(),
+                            'attention_mask': attention_mask.cpu(),
+                            'p_original': p_original.cpu(),
+                        })
 
                 for layer in layers:
                     ln = layer.name
@@ -150,7 +194,7 @@ def run_dm(
                     epoch_kl[ln] += kl.item()
                     epoch_l1[ln] += l1.item()
 
-                del vision_out, conn_out_orig, embeds_orig
+                del vision_out
                 torch.cuda.empty_cache()
                 n_steps += 1
 
@@ -170,6 +214,8 @@ def run_dm(
                     f"<0.5={stats[ln]['below_half'][-1]} "
                     f"<0.05={stats[ln]['near_zero'][-1]}"
                 )
+
+        del epoch_cache
 
         for layer in layers:
             ln = layer.name

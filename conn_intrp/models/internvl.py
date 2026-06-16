@@ -243,6 +243,9 @@ class InternVLAdapter(ModelAdapter):
         )
         self.n_patches = self.num_image_token
 
+        self._image_cache = {}
+        self._vision_cache = {}
+
     # --- Model-specific -------------------------------------------------------
 
     @property
@@ -283,9 +286,12 @@ class InternVLAdapter(ModelAdapter):
         :rtype: dict
         """
         datum = batch[0]
-        pixel_values = load_image(
-            image_base_path / datum["image"], max_num=1
-        ).to(self.compute_dtype).cuda()
+        img_path = str(image_base_path / datum["image"])
+        if img_path not in self._image_cache:
+            self._image_cache[img_path] = load_image(img_path, max_num=1)
+        pixel_values = (
+            self._image_cache[img_path].to(self.compute_dtype).cuda()
+        )
 
         template = self.get_conv_template("internvl2_5")
         template.system_message = HARNESS_PROMPT

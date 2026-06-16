@@ -25,6 +25,8 @@ Main Functions:
     run_ablation: Per-direction ablation with ANLS scoring and Δlogit extraction.
 """
 
+# FIXME: IMAGES BETWEEN CATEGORIES OVERLAP, GLOBAL MEAN ISN'T CLEAN
+
 import math
 import torch
 import numpy as np

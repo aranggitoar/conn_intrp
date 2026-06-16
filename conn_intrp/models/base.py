@@ -235,6 +235,13 @@ class ModelAdapter:
         """
         raise NotImplementedError
 
+    def clear_cache(self):
+        """Clear image and vision feature caches to free memory."""
+        if hasattr(self, '_image_cache'):
+            self._image_cache.clear()
+        if hasattr(self, '_vision_cache'):
+            self._vision_cache.clear()
+
     # --- Default implementations (override if needed) -------------------------
 
     def run_connector_masked(
