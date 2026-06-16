@@ -27,6 +27,11 @@ from pathlib import Path
 from contextlib import contextmanager
 
 
+def fs_safe(name: str) -> str:
+    """Replace path separators so *name* is safe as a single path component."""
+    return name.replace("/", "_")
+
+
 def make_run_dir(
     base: str | Path, model_name: str, method: str, tag: str | None = None
 ) -> Path:
@@ -97,7 +102,7 @@ def save_checkpoint(run_dir: str | Path, name: str, artifacts: dict) -> None:
     """
     ckpt_dir = Path(run_dir) / "checkpoints"
     ckpt_dir.mkdir(exist_ok=True)
-    torch.save(artifacts, ckpt_dir / f"{name}.pt")
+    torch.save(artifacts, ckpt_dir / f"{fs_safe(name)}.pt")
 
 
 def load_checkpoint(run_dir: str | Path, name: str) -> dict | None:
@@ -111,7 +116,7 @@ def load_checkpoint(run_dir: str | Path, name: str) -> dict | None:
     :returns: Loaded artifacts dict, or ``None``.
     :rtype: dict | None
     """
-    path = Path(run_dir) / "checkpoints" / f"{name}.pt"
+    path = Path(run_dir) / "checkpoints" / f"{fs_safe(name)}.pt"
     if path.exists():
         return torch.load(path, weights_only=False)
     return None

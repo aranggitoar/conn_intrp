@@ -29,7 +29,7 @@ from torch.nn import functional as F
 from tqdm.auto import tqdm
 
 from .models.base import ModelAdapter
-from .output import save_json
+from .output import fs_safe, save_json
 
 
 def run_spatial_probe(
@@ -91,7 +91,7 @@ def run_spatial_probe(
                 valid = [d for d in directions if d < n_dirs_layer]
                 projections[layer_name].append(proj[..., valid].cpu())
 
-        cat_dir = run_dir / name
+        cat_dir = run_dir / fs_safe(name)
         cat_dir.mkdir(exist_ok=True)
 
         result = {

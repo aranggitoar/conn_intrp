@@ -36,7 +36,8 @@ from tqdm.auto import tqdm
 from .data import best_anls
 from .models.base import ModelAdapter
 from .output import (
-    save_json, save_checkpoint, load_checkpoint, get_completed_categories,
+    fs_safe, save_json, save_checkpoint, load_checkpoint,
+    get_completed_categories,
 )
 
 
@@ -77,7 +78,7 @@ def compute_category_means(
     for name, data in tqdm(
         data_categorized.items(), desc="Computing category means"
     ):
-        if name in completed:
+        if fs_safe(name) in completed:
             ckpt = load_checkpoint(run_dir, name)
             per_category_coefficients[name] = ckpt["coefficients"]
             per_category_a_star[name] = ckpt["a_star"].to(
@@ -329,7 +330,7 @@ def run_ablation(
             botk_zero[j] = torch.cat(botk_zero[j], dim=0)
 
         # --- Save per-category results ---
-        cat_dir = run_dir / name
+        cat_dir = run_dir / fs_safe(name)
         cat_dir.mkdir(exist_ok=True)
 
         np.save(cat_dir / "nls_original.npy", np.array(nls_original))

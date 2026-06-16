@@ -27,7 +27,7 @@ from tqdm.auto import tqdm
 
 from .config import DirectionalMaskingConfig, save_dm_run
 from .models.base import ModelAdapter
-from .output import save_json
+from .output import fs_safe, save_json
 
 
 def run_dm(
@@ -235,4 +235,6 @@ def run_dm(
                 near_zero_per_epoch=s["near_zero"],
             )
             save_dm_run(config, masks[ln])
-            torch.save(masks[ln].data, run_dir / f"mask_{ln}_{name}.pt")
+            mask_path = run_dir / f"mask_{ln}_{fs_safe(name)}.pt"
+            mask_path.parent.mkdir(parents=True, exist_ok=True)
+            torch.save(masks[ln].data, mask_path)
