@@ -54,6 +54,8 @@ class SmolVLM2Adapter(ModelAdapter):
         self.model = AutoModelForImageTextToText.from_pretrained(
             repo_id, dtype=dtype, **model_kwargs
         ).cuda()
+        for param in self.model.parameters():
+            param.requires_grad_(False)
         self.model.eval()
 
         proj = self.model.model.connector.modality_projection.proj

@@ -212,6 +212,8 @@ class InternVLAdapter(ModelAdapter):
         self.model = AutoModelForImageTextToText.from_pretrained(
             repo_id_hf, dtype=dtype, trust_remote_code=True, **model_kwargs
         ).cuda()
+        for param in self.model.parameters():
+            param.requires_grad_(False)
         self.model.eval()
 
         self.mmp = self.model.model.multi_modal_projector
