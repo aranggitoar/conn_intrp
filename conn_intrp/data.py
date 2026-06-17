@@ -89,3 +89,31 @@ def best_anls(prediction: str, targets: list[str], tau: float = 0.5) -> float:
     :rtype: float
     """
     return max(relaxed_anls(prediction, t, tau) for t in targets)
+
+
+def filter_categories(
+    data_categorized: dict[str, list], *,
+    categories: list[str] | None = None,
+    max_samples: int | None = None,
+) -> dict[str, list]:
+    """
+    Filter and/or truncate a categorized dataset.
+
+    :param data_categorized: Full category dict from :func:`load_docvqa`.
+    :type data_categorized: dict[str, list]
+    :param categories: Keep only these categories.  ``None`` keeps all.
+    :type categories: list[str] | None
+    :param max_samples: Cap each category to at most this many samples.
+    :type max_samples: int | None
+    :returns: Filtered copy of the dict (never mutates the original).
+    :rtype: dict[str, list]
+    """
+    out = data_categorized
+    if categories is not None:
+        missing = set(categories) - data_categorized.keys()
+        if missing:
+            raise KeyError(f"Unknown categories: {missing}")
+        out = {k: v for k, v in out.items() if k in categories}
+    if max_samples is not None:
+        out = {k: v[:max_samples] for k, v in out.items()}
+    return out

@@ -60,12 +60,14 @@ def run_spatial_probe(
     """
     grid_size = int(math.sqrt(adapter.n_patches))
 
-    save_json(run_dir / "metadata.json", {
-        "model": adapter.model_name,
-        "n_patches": adapter.n_patches,
-        "grid_size": grid_size,
-        "directions": directions,
-    })
+    meta_path = run_dir / "metadata.json"
+    if not meta_path.exists():
+        save_json(meta_path, {
+            "model": adapter.model_name,
+            "n_patches": adapter.n_patches,
+            "grid_size": grid_size,
+            "directions": directions,
+        })
 
     completed_probe = {
         name for name in data_categorized

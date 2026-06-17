@@ -8,7 +8,7 @@ Pipeline phases:
 """
 
 from .config import DirectionalMaskingConfig
-from .data import load_docvqa, HARNESS_PROMPT, best_anls, relaxed_anls
+from .data import load_docvqa, HARNESS_PROMPT, best_anls, relaxed_anls, filter_categories
 from .output import (
     make_run_dir, find_latest_run, save_json, save_checkpoint, load_checkpoint,
 )
@@ -22,6 +22,7 @@ __all__ = [
     "HARNESS_PROMPT",
     "best_anls",
     "relaxed_anls",
+    "filter_categories",
     "make_run_dir",
     "find_latest_run",
     "save_json",

@@ -60,6 +60,7 @@ def run_dm(
     :type run_dir: Path
     """
     layers = adapter.svd_layers
+    cache_vision = epochs > 1 or len(data_categorized) > 1
 
     meta_path = run_dir / "metadata.json"
     if not meta_path.exists():
@@ -118,7 +119,7 @@ def run_dm(
             )):
                 batch = data[i:i + step]
                 image_keys = [d['image'] for d in batch]
-                all_vision_cached = all(
+                all_vision_cached = cache_vision and all(
                     k in adapter._vision_cache for k in image_keys
                 )
 
@@ -149,11 +150,12 @@ def run_dm(
                             )
                         else:
                             vision_out = adapter.extract_vision(inputs)
-                            for j, k in enumerate(image_keys):
-                                if k not in adapter._vision_cache:
-                                    adapter._vision_cache[k] = (
-                                        vision_out[j:j + 1].cpu()
-                                    )
+                            if cache_vision:
+                                for j, k in enumerate(image_keys):
+                                    if k not in adapter._vision_cache:
+                                        adapter._vision_cache[k] = (
+                                            vision_out[j:j + 1].cpu()
+                                        )
 
                         conn_out_orig = adapter.run_connector(vision_out)
                         text_embeds = adapter.get_text_embeds(inputs)

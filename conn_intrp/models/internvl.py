@@ -195,7 +195,8 @@ class InternVLAdapter(ModelAdapter):
 
     def __init__(
         self, repo_id_hf: str, repo_id_conv: str | None = None,
-        dtype: torch.dtype = torch.bfloat16, **model_kwargs,
+        dtype: torch.dtype = torch.bfloat16, cache_images: bool = True,
+        **model_kwargs,
     ):
         self.repo_id_hf = repo_id_hf
         self.compute_dtype = dtype
@@ -243,6 +244,7 @@ class InternVLAdapter(ModelAdapter):
         )
         self.n_patches = self.num_image_token
 
+        self.cache_images = cache_images
         self._image_cache = {}
         self._vision_cache = {}
 
@@ -271,6 +273,13 @@ class InternVLAdapter(ModelAdapter):
         bias = self.proj_bias.to(W_masked.dtype) if self.proj_bias is not None else None
         return F.linear(hidden, W_masked, bias)
 
+    def _load_image(self, img_path: str) -> torch.Tensor:
+        if self.cache_images:
+            if img_path not in self._image_cache:
+                self._image_cache[img_path] = load_image(img_path, max_num=1)
+            return self._image_cache[img_path]
+        return load_image(img_path, max_num=1)
+
     def preprocess(self, batch: list[dict], image_base_path: Path) -> dict:
         """
         Single-image tokenization with manual prompt construction.
@@ -287,10 +296,8 @@ class InternVLAdapter(ModelAdapter):
         """
         datum = batch[0]
         img_path = str(image_base_path / datum["image"])
-        if img_path not in self._image_cache:
-            self._image_cache[img_path] = load_image(img_path, max_num=1)
         pixel_values = (
-            self._image_cache[img_path].to(self.compute_dtype).cuda()
+            self._load_image(img_path).to(self.compute_dtype).cuda()
         )
 
         template = self.get_conv_template("internvl2_5")

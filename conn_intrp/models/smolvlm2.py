@@ -41,7 +41,8 @@ class SmolVLM2Adapter(ModelAdapter):
     """
 
     def __init__(
-        self, repo_id: str, dtype: torch.dtype = torch.float16, **model_kwargs,
+        self, repo_id: str, dtype: torch.dtype = torch.float16,
+        cache_images: bool = True, **model_kwargs,
     ):
         self.repo_id = repo_id
         self.compute_dtype = dtype
@@ -79,6 +80,7 @@ class SmolVLM2Adapter(ModelAdapter):
             // self.scale_factor ** 2
         )
 
+        self.cache_images = cache_images
         self._image_cache = {}
         self._vision_cache = {}
 
@@ -97,6 +99,15 @@ class SmolVLM2Adapter(ModelAdapter):
         bias = self.proj_bias.to(W_masked.dtype) if self.proj_bias is not None else None
         return F.linear(hidden, W_masked, bias)
 
+    def _load_image(self, img_path: str) -> Image.Image:
+        if self.cache_images:
+            if img_path not in self._image_cache:
+                self._image_cache[img_path] = (
+                    Image.open(img_path).convert("RGB")
+                )
+            return self._image_cache[img_path]
+        return Image.open(img_path).convert("RGB")
+
     def preprocess(self, batch: list[dict], image_base_path: Path) -> dict:
         """
         Tokenize a batch of image–question pairs via ``apply_chat_template``.
@@ -111,15 +122,11 @@ class SmolVLM2Adapter(ModelAdapter):
         prompts = []
         for datum in batch:
             img_path = str(image_base_path / datum["image"])
-            if img_path not in self._image_cache:
-                self._image_cache[img_path] = (
-                    Image.open(img_path).convert("RGB")
-                )
             prompts.append([{
                 "role": "user",
                 "content": [
                     {"type": "text", "text": HARNESS_PROMPT},
-                    {"type": "image", "image": self._image_cache[img_path]},
+                    {"type": "image", "image": self._load_image(img_path)},
                     {"type": "text", "text": datum["question"]},
                 ],
             }])

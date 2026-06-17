@@ -5,12 +5,15 @@ Usage:
     python scripts/run_ablation.py                          # SmolVLM2 (default)
     python scripts/run_ablation.py --internvl               # InternVL3.5
     python scripts/run_ablation.py --directions 23 70 255   # specific directions
+    python scripts/run_ablation.py --resume                 # resume latest run
+    python scripts/run_ablation.py --categories "table/list"
+    python scripts/run_ablation.py --max-samples 20
 """
 
 import argparse
 from pathlib import Path
 
-from conn_intrp.data import load_docvqa
+from conn_intrp.data import load_docvqa, filter_categories
 from conn_intrp.output import make_run_dir, save_json
 from conn_intrp.ablation import compute_category_means, run_ablation
 
@@ -18,6 +21,9 @@ from conn_intrp.ablation import compute_category_means, run_ablation
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--internvl", action="store_true")
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--categories", type=str, nargs="+", default=None)
+    parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument(
         "--directions", type=int, nargs="+", default=[23, 70, 255],
     )
@@ -31,6 +37,11 @@ def main():
     _, data_categorized = load_docvqa(
         image_base_path / "train_v1.0_withQT.json"
     )
+    data_categorized = filter_categories(
+        data_categorized,
+        categories=args.categories,
+        max_samples=args.max_samples,
+    )
 
     if args.internvl:
         from conn_intrp.models import InternVLAdapter
@@ -41,15 +52,19 @@ def main():
         adapter = SmolVLM2Adapter("HuggingFaceTB/SmolVLM2-500M-Video-Instruct")
         batch_size = args.batch_size or 5
 
-    run_dir = make_run_dir(Path(args.output), adapter.model_name, "ablation")
-    save_json(run_dir / "metadata.json", dict(
-        model=adapter.model_name,
-        directions=args.directions,
-        batch_size=batch_size,
-        K=args.K,
-        n_categories=len(data_categorized),
-        category_sizes={n: len(d) for n, d in data_categorized.items()},
-    ))
+    run_dir = make_run_dir(
+        Path(args.output), adapter.model_name, "ablation", resume=args.resume,
+    )
+    meta_path = run_dir / "metadata.json"
+    if not meta_path.exists():
+        save_json(meta_path, dict(
+            model=adapter.model_name,
+            directions=args.directions,
+            batch_size=batch_size,
+            K=args.K,
+            n_categories=len(data_categorized),
+            category_sizes={n: len(d) for n, d in data_categorized.items()},
+        ))
 
     coefficients, cat_means, global_mean = compute_category_means(
         adapter, data_categorized,

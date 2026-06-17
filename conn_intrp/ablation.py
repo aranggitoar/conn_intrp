@@ -403,6 +403,3 @@ def run_ablation(
             f"global={[f'{a:.4f}' for a in anls_global]}"
             f"zero={[f'{a:.4f}' for a in anls_zero]}"
         )
-
-
-# TODO: run_ablation_zero — zero ablation baseline
