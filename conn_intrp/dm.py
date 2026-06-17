@@ -107,7 +107,8 @@ def run_dm(
     :param max_step: Upper bound on the auto-computed step.
     :type max_step: int | None
     :param patience: Stop early when the ``<0.5`` count changes by less
-        than 1 % of *n_dirs* for this many consecutive epochs.
+        than 1 % of *n_dirs* for this many consecutive epochs.  Set to 0
+        to disable early stopping.
     :type patience: int
     :param image_base_path: Root directory for image files.
     :type image_base_path: Path
@@ -303,7 +304,7 @@ def run_dm(
                 )
 
             n_dirs = layers[0].n_dirs
-            if _check_converged(stats, n_dirs, patience):
+            if patience and _check_converged(stats, n_dirs, patience):
                 print(
                     f'  "{name}" converged at epoch {ep + 1} '
                     f"(stable for {patience} epochs)"
