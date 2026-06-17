@@ -440,7 +440,7 @@ class InternVLAdapter(ModelAdapter):
         :returns: Single-element list with decoded prediction.
         :rtype: list[str]
         """
-        out = self.model.model.language_model.generate(
+        out = self.model.generate(
             inputs_embeds=embeds,
             attention_mask=attention_mask,
             max_new_tokens=max_new_tokens,
