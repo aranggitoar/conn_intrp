@@ -53,14 +53,14 @@ def _resolve_step(
 
 
 def _check_converged(stats: dict, n_dirs: int, patience: int) -> bool:
-    """All layers stable for *patience* consecutive epochs."""
+    """All layers' near-zero count stable for *patience* consecutive epochs."""
     for ln, s in stats.items():
-        bh = s["below_half"]
-        if len(bh) < patience + 1:
+        nz = s["near_zero"]
+        if len(nz) < patience + 1:
             return False
         threshold = max(1, int(n_dirs * 0.01))
         for i in range(-patience, 0):
-            if abs(bh[i] - bh[i - 1]) > threshold:
+            if abs(nz[i] - nz[i - 1]) > threshold:
                 return False
     return True
 
@@ -106,9 +106,9 @@ def run_dm(
     :type target_updates_per_epoch: int | None
     :param max_step: Upper bound on the auto-computed step.
     :type max_step: int | None
-    :param patience: Stop early when the ``<0.5`` count changes by less
-        than 1 % of *n_dirs* for this many consecutive epochs.  Set to 0
-        to disable early stopping.
+    :param patience: Stop early when the near-zero (``<0.05``) count
+        changes by less than 1 % of *n_dirs* for this many consecutive
+        epochs.  Set to 0 to disable early stopping.
     :type patience: int
     :param image_base_path: Root directory for image files.
     :type image_base_path: Path
