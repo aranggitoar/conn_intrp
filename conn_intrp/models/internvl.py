@@ -25,8 +25,7 @@ from pathlib import Path
 from PIL import Image
 from torch.nn import functional as F
 from torchvision.transforms.functional import InterpolationMode
-from transformers import AutoTokenizer, AutoModelForImageTextToText
-from transformers.dynamic_module_utils import get_class_from_dynamic_module
+from transformers import AutoProcessor, AutoModelForImageTextToText
 
 from ..data import HARNESS_PROMPT
 from .base import ModelAdapter, SVDLayer
@@ -201,15 +200,11 @@ class InternVLAdapter(ModelAdapter):
         self.repo_id_hf = repo_id_hf
         self.compute_dtype = dtype
 
-        if repo_id_conv is None:
-            repo_id_conv = repo_id_hf.replace("-HF", "")
-        self.get_conv_template = get_class_from_dynamic_module(
-            "conversation.get_conv_template", repo_id_conv
-        )
-
-        self.tokenizer = AutoTokenizer.from_pretrained(
+        self.processor = AutoProcessor.from_pretrained(
             repo_id_hf, trust_remote_code=True
         )
+        self.processor.image_processor.max_patches = 1
+        self.tokenizer = self.processor.tokenizer
         self.model = AutoModelForImageTextToText.from_pretrained(
             repo_id_hf, dtype=dtype, trust_remote_code=True, **model_kwargs
         ).cuda()
@@ -273,55 +268,42 @@ class InternVLAdapter(ModelAdapter):
         bias = self.proj_bias.to(W_masked.dtype) if self.proj_bias is not None else None
         return F.linear(hidden, W_masked, bias)
 
-    def _load_image(self, img_path: str) -> torch.Tensor:
+    def _load_image(self, img_path: str) -> Image.Image:
         if self.cache_images:
             if img_path not in self._image_cache:
-                self._image_cache[img_path] = load_image(img_path, max_num=1)
+                self._image_cache[img_path] = (
+                    Image.open(img_path).convert("RGB")
+                )
             return self._image_cache[img_path]
-        return load_image(img_path, max_num=1)
+        return Image.open(img_path).convert("RGB")
 
     def preprocess(self, batch: list[dict], image_base_path: Path) -> dict:
         """
-        Single-image tokenization with manual prompt construction.
+        Tokenize a batch of image-question pairs via the HF processor.
 
-        InternVL images produce variable tile counts, so the pipeline
-        should call this with ``batch`` of length 1.
-
-        :param batch: Single-element list with ``"image"`` and ``"question"`` keys.
+        :param batch: Data dicts with ``"image"`` and ``"question"`` keys.
         :type batch: list[dict]
         :param image_base_path: Root directory for image files.
         :type image_base_path: Path
-        :returns: Tokenized inputs on CUDA with ``pixel_values``.
+        :returns: Batched, padded inputs on CUDA.
         :rtype: dict
         """
-        datum = batch[0]
-        img_path = str(image_base_path / datum["image"])
-        pixel_values = (
-            self._load_image(img_path).to(self.compute_dtype).cuda()
-        )
-
-        template = self.get_conv_template("internvl2_5")
-        template.system_message = HARNESS_PROMPT
-        template.append_message(
-            template.roles[0], f'<image>\n{datum["question"]}'
-        )
-        template.append_message(template.roles[1], None)
-        query = template.get_prompt()
-
-        num_patches = pixel_values.shape[0]
-        image_tokens = (
-            IMG_START_TOKEN
-            + IMG_CONTEXT_TOKEN * self.num_image_token * num_patches
-            + IMG_END_TOKEN
-        )
-        query = query.replace("<image>", image_tokens, 1)
-
-        inputs = self.tokenizer(query, return_tensors="pt")
-        return {
-            "input_ids": inputs["input_ids"].cuda(),
-            "attention_mask": inputs["attention_mask"].cuda(),
-            "pixel_values": pixel_values,
-        }
+        conversations = []
+        for datum in batch:
+            img_path = str(image_base_path / datum["image"])
+            conversations.append([
+                {"role": "system", "content": [
+                    {"type": "text", "text": HARNESS_PROMPT},
+                ]},
+                {"role": "user", "content": [
+                    {"type": "image", "image": self._load_image(img_path)},
+                    {"type": "text", "text": datum["question"]},
+                ]},
+            ])
+        return self.processor.apply_chat_template(
+            conversations, add_generation_prompt=True, padding=True,
+            tokenize=True, return_dict=True, return_tensors="pt",
+        ).to("cuda")
 
     def _get_selected_mask(self, inputs: dict) -> torch.Tensor:
         """
@@ -446,13 +428,16 @@ class InternVLAdapter(ModelAdapter):
             max_new_tokens=max_new_tokens,
             do_sample=False,
         )
-        return [self.tokenizer.decode(out[0], skip_special_tokens=True)]
+        return self.processor.batch_decode(out, skip_special_tokens=True)
 
     def get_logits(
         self, embeds: torch.Tensor, attention_mask: torch.Tensor,
     ) -> torch.Tensor:
         """
         Last-position logits from the language model.
+
+        Handles right-padded batches by indexing the true last token
+        per sequence rather than the padded ``[:, -1]`` position.
 
         :param embeds: Merged input embeddings.
         :type embeds: torch.Tensor
@@ -466,7 +451,12 @@ class InternVLAdapter(ModelAdapter):
             attention_mask=attention_mask,
             return_dict=True,
         )
-        return self.model.lm_head(text_out[0][:, -1, :])
+        last_pos = attention_mask.sum(dim=1) - 1
+        B = embeds.shape[0]
+        return torch.stack([
+            self.model.lm_head(text_out[0][b, last_pos[b], :])
+            for b in range(B)
+        ])
 
     def compute_probe_projections(self, inputs: dict) -> dict[str, torch.Tensor]:
         """
