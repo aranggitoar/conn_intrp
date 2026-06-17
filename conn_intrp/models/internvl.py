@@ -466,7 +466,9 @@ class InternVLAdapter(ModelAdapter):
             attention_mask=attention_mask,
             return_dict=True,
         )
-        return text_out.logits[:, -1, :]
+        return self.model.model.language_model.lm_head(
+            text_out[0][:, -1, :]
+        )
 
     def compute_probe_projections(self, inputs: dict) -> dict[str, torch.Tensor]:
         """
