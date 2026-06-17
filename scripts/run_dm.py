@@ -35,6 +35,8 @@ def main():
                         help="Cap auto-computed step (GPU memory limit).")
     parser.add_argument("--patience", type=int, default=2,
                         help="Early stop after this many stable epochs.")
+    parser.add_argument("--conv-threshold", type=float, default=0.02,
+                        help="Convergence threshold as fraction of n_dirs.")
     parser.add_argument("--dataset", type=str, default="dataset/docVQA")
     parser.add_argument("--output", type=str, default="outputs")
     args = parser.parse_args()
@@ -76,6 +78,7 @@ def main():
         target_updates_per_epoch=target_updates,
         max_step=args.max_step,
         patience=args.patience,
+        conv_threshold=args.conv_threshold,
         image_base_path=image_base_path,
         run_dir=run_dir,
     )

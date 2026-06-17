@@ -52,9 +52,11 @@ def _resolve_step(
     return 1
 
 
-def _check_converged(stats: dict, n_dirs: int, patience: int) -> bool:
+def _check_converged(
+    stats: dict, n_dirs: int, patience: int, conv_threshold: float,
+) -> bool:
     """All layers' <0.5 and near-zero counts stable for *patience* epochs."""
-    threshold = max(1, int(n_dirs * 0.01))
+    threshold = max(1, int(n_dirs * conv_threshold))
     for ln, s in stats.items():
         for key in ("below_half", "near_zero"):
             seq = s[key]
@@ -73,6 +75,7 @@ def run_dm(
     target_updates_per_epoch: int | None = None,
     max_step: int | None = None,
     patience: int = 2,
+    conv_threshold: float = 0.02,
     image_base_path: Path, run_dir: Path,
 ) -> None:
     """
@@ -108,9 +111,13 @@ def run_dm(
     :param max_step: Upper bound on the auto-computed step.
     :type max_step: int | None
     :param patience: Stop early when both the ``<0.5`` and near-zero
-        (``<0.05``) counts change by less than 1 % of *n_dirs* for this
-        many consecutive epochs.  Set to 0 to disable early stopping.
+        (``<0.05``) counts change by less than *conv_threshold* of
+        *n_dirs* for this many consecutive epochs.  Set to 0 to disable
+        early stopping.
     :type patience: int
+    :param conv_threshold: Fraction of *n_dirs* used as the convergence
+        threshold for early stopping.
+    :type conv_threshold: float
     :param image_base_path: Root directory for image files.
     :type image_base_path: Path
     :param run_dir: Output directory for this run.
@@ -305,7 +312,7 @@ def run_dm(
                 )
 
             n_dirs = layers[0].n_dirs
-            if patience and _check_converged(stats, n_dirs, patience):
+            if patience and _check_converged(stats, n_dirs, patience, conv_threshold):
                 print(
                     f'  "{name}" converged at epoch {ep + 1} '
                     f"(stable for {patience} epochs)"
