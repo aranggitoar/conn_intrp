@@ -23,10 +23,18 @@ def main():
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--categories", type=str, nargs="+", default=None)
     parser.add_argument("--max-samples", type=int, default=None)
-    parser.add_argument("--sparsity-coef", type=float, default=1.5e-3)
-    parser.add_argument("--lr", type=float, default=0.1)
-    parser.add_argument("--epochs", type=int, default=3)
-    parser.add_argument("--step", type=int, default=None)
+    parser.add_argument("--sparsity-coef", type=float, default=5e-3)
+    parser.add_argument("--lr", type=float, default=1.0)
+    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--step", type=int, default=None,
+                        help="Fixed batch size. Overrides --target-updates.")
+    parser.add_argument("--target-updates", type=int, default=None,
+                        help="Target gradient updates per epoch; step is "
+                             "derived per category from its size.")
+    parser.add_argument("--max-step", type=int, default=None,
+                        help="Cap auto-computed step (GPU memory limit).")
+    parser.add_argument("--patience", type=int, default=2,
+                        help="Early stop after this many stable epochs.")
     parser.add_argument("--dataset", type=str, default="dataset/docVQA")
     parser.add_argument("--output", type=str, default="outputs")
     args = parser.parse_args()
@@ -44,11 +52,16 @@ def main():
     if args.internvl:
         from conn_intrp.models import InternVLAdapter
         adapter = InternVLAdapter("OpenGVLab/InternVL3_5-2B-HF")
-        step = args.step or 1
+        default_step = 1
     else:
         from conn_intrp.models import SmolVLM2Adapter
         adapter = SmolVLM2Adapter("HuggingFaceTB/SmolVLM2-500M-Video-Instruct")
-        step = args.step or 5
+        default_step = 5
+
+    step = args.step
+    target_updates = args.target_updates
+    if step is None and target_updates is None:
+        step = default_step
 
     run_dir = make_run_dir(
         Path(args.output), adapter.model_name, "dm", resume=args.resume,
@@ -60,6 +73,9 @@ def main():
         lr=args.lr,
         epochs=args.epochs,
         step=step,
+        target_updates_per_epoch=target_updates,
+        max_step=args.max_step,
+        patience=args.patience,
         image_base_path=image_base_path,
         run_dir=run_dir,
     )

@@ -5,15 +5,21 @@ Learns a ``[0, 1]`` mask weight per SVD direction per DocVQA category.
 Loss is ``KL(masked || original) + sparsity * L1(mask)``, optimized
 via projected SGD (gradient step then clamp to ``[0, 1]``).
 
+Batch size is resolved per category so that all categories receive a
+similar number of gradient updates per epoch (see ``_resolve_step``).
+Training stops early when the ``<0.5`` mask count stabilises across
+all layers for ``patience`` consecutive epochs.
+
 Example::
 
     >>> from conn_intrp import run_dm, load_docvqa, make_run_dir
-    >>> from conn_intrp.models import SmolVLM2Adapter
-    >>> adapter = SmolVLM2Adapter("HuggingFaceTB/SmolVLM2-2.2B-Instruct")
+    >>> from conn_intrp.models import InternVLAdapter
+    >>> adapter = InternVLAdapter("OpenGVLab/InternVL3_5-2B-HF")
     >>> _, categorized = load_docvqa("dataset/docVQA/train_v1.0_withQT.json")
-    >>> run_dir = make_run_dir("outputs", "smolvlm2", "dm")
-    >>> run_dm(adapter, categorized, sparsity_coef=1.5e-3, lr=0.1,
-    ...        epochs=3, step=5, image_base_path=Path("images"), run_dir=run_dir)
+    >>> run_dir = make_run_dir("outputs", "internvl3_5", "dm")
+    >>> run_dm(adapter, categorized, sparsity_coef=5e-3, lr=1.0,
+    ...        target_updates_per_epoch=300, max_step=50,
+    ...        image_base_path=Path("dataset/docVQA"), run_dir=run_dir)
 
 Main Functions:
     run_dm: Train per-category directional masks across all categories.
@@ -30,17 +36,57 @@ from .models.base import ModelAdapter
 from .output import fs_safe, save_json
 
 
+def _resolve_step(
+    n_images: int,
+    step: int | None,
+    target_updates_per_epoch: int | None,
+    max_step: int | None,
+) -> int:
+    if step is not None:
+        return step
+    if target_updates_per_epoch is not None:
+        s = max(1, round(n_images / target_updates_per_epoch))
+        if max_step is not None:
+            s = min(s, max_step)
+        return s
+    return 1
+
+
+def _check_converged(stats: dict, n_dirs: int, patience: int) -> bool:
+    """All layers stable for *patience* consecutive epochs."""
+    for ln, s in stats.items():
+        bh = s["below_half"]
+        if len(bh) < patience + 1:
+            return False
+        threshold = max(1, int(n_dirs * 0.01))
+        for i in range(-patience, 0):
+            if abs(bh[i] - bh[i - 1]) > threshold:
+                return False
+    return True
+
+
 def run_dm(
     adapter: ModelAdapter, data_categorized: dict[str, list], *,
-    sparsity_coef: float, lr: float, epochs: int, step: int,
+    sparsity_coef: float, lr: float, epochs: int = 10,
+    step: int | None = None,
+    target_updates_per_epoch: int | None = None,
+    max_step: int | None = None,
+    patience: int = 2,
     image_base_path: Path, run_dir: Path,
 ) -> None:
     """
     Train per-category directional masks for all question categories.
 
     For each category, initialises a fresh mask (all 0.99), runs projected
-    SGD for *epochs* passes over the data, and saves the learned mask
-    plus per-epoch statistics.
+    SGD for up to *epochs* passes over the data (with early stopping),
+    and saves the learned mask plus per-epoch statistics.
+
+    Batch size per category is resolved as follows:
+
+    - If *step* is given, it is used for all categories.
+    - If *target_updates_per_epoch* is given, step is derived per category
+      so each gets approximately that many gradient updates per epoch.
+    - *max_step* caps the auto-computed step (GPU memory).
 
     :param adapter: Model adapter instance.
     :type adapter: ModelAdapter
@@ -50,15 +96,27 @@ def run_dm(
     :type sparsity_coef: float
     :param lr: SGD learning rate.
     :type lr: float
-    :param epochs: Number of training epochs per category.
+    :param epochs: Maximum training epochs per category.
     :type epochs: int
-    :param step: Batch size (1 for InternVL, >1 for SmolVLM2).
-    :type step: int
+    :param step: Fixed batch size for all categories.  Mutually exclusive
+        with *target_updates_per_epoch*; one of the two must be provided.
+    :type step: int | None
+    :param target_updates_per_epoch: Desired gradient updates per epoch;
+        step is derived per category from ``round(n_images / target)``.
+    :type target_updates_per_epoch: int | None
+    :param max_step: Upper bound on the auto-computed step.
+    :type max_step: int | None
+    :param patience: Stop early when the ``<0.5`` count changes by less
+        than 1 % of *n_dirs* for this many consecutive epochs.
+    :type patience: int
     :param image_base_path: Root directory for image files.
     :type image_base_path: Path
     :param run_dir: Output directory for this run.
     :type run_dir: Path
     """
+    if step is None and target_updates_per_epoch is None:
+        raise ValueError("Provide either step or target_updates_per_epoch")
+
     layers = adapter.svd_layers
     cache_vision = epochs > 1 or len(data_categorized) > 1
 
@@ -71,6 +129,8 @@ def run_dm(
             lr=lr,
             epochs=epochs,
             step=step,
+            target_updates_per_epoch=target_updates_per_epoch,
+            max_step=max_step,
             n_categories=len(data_categorized),
             category_sizes={n: len(d) for n, d in data_categorized.items()},
         ))
@@ -89,6 +149,16 @@ def run_dm(
         if name in completed:
             print(f'  Skipping "{name}" (masks exist)')
             continue
+
+        cat_step = _resolve_step(
+            len(data), step, target_updates_per_epoch, max_step,
+        )
+        n_updates_ep = math.ceil(len(data) / cat_step)
+        print(
+            f'  "{name}": {len(data)} images, '
+            f"step={cat_step}, ~{n_updates_ep} updates/epoch"
+        )
+
         masks = {}
         optimizers = {}
         stats = {}
@@ -112,12 +182,12 @@ def run_dm(
             n_steps = 0
 
             for batch_idx, i in enumerate(tqdm(
-                range(0, length, step),
-                total=math.ceil(length / step),
+                range(0, length, cat_step),
+                total=math.ceil(length / cat_step),
                 desc=f"  epoch {ep + 1}",
                 leave=False,
             )):
-                batch = data[i:i + step]
+                batch = data[i:i + cat_step]
                 image_keys = [d['image'] for d in batch]
                 all_vision_cached = cache_vision and all(
                     k in adapter._vision_cache for k in image_keys
@@ -232,6 +302,15 @@ def run_dm(
                     f"<0.05={stats[ln]['near_zero'][-1]}"
                 )
 
+            n_dirs = layers[0].n_dirs
+            if _check_converged(stats, n_dirs, patience):
+                print(
+                    f'  "{name}" converged at epoch {ep + 1} '
+                    f"(stable for {patience} epochs)"
+                )
+                break
+
+        actual_epochs = ep + 1
         del epoch_cache
 
         for layer in layers:
@@ -250,8 +329,8 @@ def run_dm(
                 optimizer="SGD",
                 sparsity_coef=sparsity_coef,
                 lr=lr,
-                epochs=epochs,
-                step=step,
+                epochs=actual_epochs,
+                step=cat_step,
                 kl_per_epoch=s["kl"],
                 l1_per_epoch=s["l1"],
                 below_half_per_epoch=s["below_half"],
