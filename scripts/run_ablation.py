@@ -1,6 +1,9 @@
 """
 Run mean ablation + ANLS + Δlogit for a specific model.
 
+Means are computed on the training split; ANLS is scored on the
+validation split (``val_v1.0_withQT.json``).
+
 Usage:
     python scripts/run_ablation.py                          # SmolVLM2 (default)
     python scripts/run_ablation.py --internvl               # InternVL3.5
@@ -30,15 +33,26 @@ def main():
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--K", type=int, default=15)
     parser.add_argument("--dataset", type=str, default="dataset/docVQA")
+    parser.add_argument("--val-json", type=str, default="val_v1.0_withQT.json",
+                        help="Validation JSON filename (relative to --dataset).")
     parser.add_argument("--output", type=str, default="outputs")
     args = parser.parse_args()
 
     image_base_path = Path(args.dataset)
-    _, data_categorized = load_docvqa(
+
+    _, train_categorized = load_docvqa(
         image_base_path / "train_v1.0_withQT.json"
     )
-    data_categorized = filter_categories(
-        data_categorized,
+    val_path = image_base_path / args.val_json
+    _, val_categorized = load_docvqa(val_path)
+
+    train_categorized = filter_categories(
+        train_categorized,
+        categories=args.categories,
+        max_samples=args.max_samples,
+    )
+    val_categorized = filter_categories(
+        val_categorized,
         categories=args.categories,
         max_samples=args.max_samples,
     )
@@ -55,16 +69,23 @@ def main():
     run_dir = make_run_dir(
         Path(args.output), adapter.model_name, "ablation", resume=args.resume,
     )
-    coefficients, cat_means, global_mean = compute_category_means(
-        adapter, data_categorized,
+    _, cat_means, global_mean = compute_category_means(
+        adapter, train_categorized,
         batch_size=batch_size,
         image_base_path=image_base_path,
         run_dir=run_dir,
     )
 
+    val_coefficients, _, _ = compute_category_means(
+        adapter, val_categorized,
+        batch_size=batch_size,
+        image_base_path=image_base_path,
+        run_dir=run_dir / "val_coefficients",
+    )
+
     run_ablation(
-        adapter, data_categorized,
-        coefficients, cat_means, global_mean,
+        adapter, val_categorized,
+        val_coefficients, cat_means, global_mean,
         directions_to_ablate=args.directions,
         batch_size=batch_size,
         K=args.K,
