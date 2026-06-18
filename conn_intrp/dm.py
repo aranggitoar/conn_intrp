@@ -33,7 +33,7 @@ from tqdm.auto import tqdm
 
 from .config import DirectionalMaskingConfig, save_dm_run
 from .models.base import ModelAdapter
-from .output import fs_safe, save_json
+from .output import fs_safe, update_metadata
 
 
 def _resolve_step(
@@ -129,20 +129,18 @@ def run_dm(
     layers = adapter.svd_layers
     cache_vision = epochs > 1 or len(data_categorized) > 1
 
-    meta_path = run_dir / "metadata.json"
-    if not meta_path.exists():
-        save_json(meta_path, dict(
-            model=adapter.model_name,
-            layers=[l.name for l in layers],
-            sparsity_coef=sparsity_coef,
-            lr=lr,
-            epochs=epochs,
-            step=step,
-            target_updates_per_epoch=target_updates_per_epoch,
-            max_step=max_step,
-            n_categories=len(data_categorized),
-            category_sizes={n: len(d) for n, d in data_categorized.items()},
-        ))
+    update_metadata(run_dir, dict(
+        model=adapter.model_name,
+        layers=[l.name for l in layers],
+        sparsity_coef=sparsity_coef,
+        lr=lr,
+        epochs=epochs,
+        step=step,
+        target_updates_per_epoch=target_updates_per_epoch,
+        max_step=max_step,
+        n_categories=len(data_categorized),
+        category_sizes={n: len(d) for n, d in data_categorized.items()},
+    ))
 
     completed = {
         name for name in data_categorized

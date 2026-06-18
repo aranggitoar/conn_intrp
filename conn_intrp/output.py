@@ -101,6 +101,27 @@ def find_latest_run(
     return candidates[0] if candidates else None
 
 
+def update_metadata(run_dir: str | Path, data: dict) -> None:
+    """
+    Create or update ``metadata.json`` in *run_dir*.
+
+    On first call, writes *data* as-is.  On subsequent calls, merges
+    *data* into the existing file (top-level keys are overwritten).
+
+    :param run_dir: Run output directory.
+    :type run_dir: str | Path
+    :param data: Metadata fields to write or update.
+    :type data: dict
+    """
+    path = Path(run_dir) / "metadata.json"
+    if path.exists():
+        with open(path) as f:
+            existing = json.load(f)
+        existing.update(_make_serializable(data))
+        data = existing
+    save_json(path, data)
+
+
 def save_json(path: str | Path, data: dict) -> None:
     """
     Serialize *data* to JSON, converting tensors and ndarrays automatically.

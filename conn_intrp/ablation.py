@@ -36,7 +36,7 @@ from tqdm.auto import tqdm
 from .data import best_anls
 from .models.base import ModelAdapter
 from .output import (
-    fs_safe, save_json, save_checkpoint, load_checkpoint,
+    fs_safe, save_json, update_metadata, save_checkpoint, load_checkpoint,
     get_completed_categories,
 )
 
@@ -191,6 +191,15 @@ def run_ablation(
     :param run_dir: Output directory for this run.
     :type run_dir: Path
     """
+    update_metadata(run_dir, dict(
+        model=adapter.model_name,
+        directions=directions_to_ablate,
+        batch_size=batch_size,
+        K=K,
+        n_categories=len(data_categorized),
+        category_sizes={n: len(d) for n, d in data_categorized.items()},
+    ))
+
     completed_ablation = {
         name for name in data_categorized
         if (run_dir / fs_safe(name) / "anls_summary.json").exists()

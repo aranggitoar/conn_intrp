@@ -14,7 +14,7 @@ import argparse
 from pathlib import Path
 
 from conn_intrp.data import load_docvqa, filter_categories
-from conn_intrp.output import make_run_dir, save_json
+from conn_intrp.output import make_run_dir
 from conn_intrp.ablation import compute_category_means, run_ablation
 
 
@@ -55,17 +55,6 @@ def main():
     run_dir = make_run_dir(
         Path(args.output), adapter.model_name, "ablation", resume=args.resume,
     )
-    meta_path = run_dir / "metadata.json"
-    if not meta_path.exists():
-        save_json(meta_path, dict(
-            model=adapter.model_name,
-            directions=args.directions,
-            batch_size=batch_size,
-            K=args.K,
-            n_categories=len(data_categorized),
-            category_sizes={n: len(d) for n, d in data_categorized.items()},
-        ))
-
     coefficients, cat_means, global_mean = compute_category_means(
         adapter, data_categorized,
         batch_size=batch_size,
