@@ -45,7 +45,12 @@ def load_dm_masks(run_dir: str | Path) -> dict[str, dict[str, torch.Tensor]]:
     for pt in sorted(run_dir.glob("mask_*.pt")):
         rest = pt.stem.removeprefix("mask_")  # e.g. linear_2_figure_diagram
         layer, cat = _split_by_layers(rest, layer_names)
-        masks.setdefault(layer, {})[cat] = torch.load(pt, weights_only=True)
+        if not torch.cuda.is_available():
+            masks.setdefault(layer, {})[cat] = torch.load(
+                pt, weights_only=True, map_location=torch.device("cpu")
+            )
+        else:
+            masks.setdefault(layer, {})[cat] = torch.load(pt, weights_only=True)
     return masks
 
 
