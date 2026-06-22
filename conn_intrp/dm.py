@@ -24,6 +24,7 @@ Example::
 Main Functions:
     run_dm: Train per-category directional masks across all categories.
     evaluate_mask_kl: Measure KL divergence of a given mask without training.
+    evaluate_dm_baselines: Optimized vs random mask KL across thresholds.
 """
 
 import math
@@ -35,7 +36,7 @@ from tqdm.auto import tqdm
 
 from .config import DirectionalMaskingConfig, save_dm_run
 from .models.base import ModelAdapter
-from .output import fs_safe, update_metadata
+from .output import fs_safe, save_json, update_metadata
 
 
 def _resolve_step(
@@ -153,6 +154,140 @@ def evaluate_mask_kl(
         n_steps += 1
 
     return {ln: kl_sums[ln] / max(n_steps, 1) for ln in mask_weights}
+
+
+def evaluate_dm_baselines(
+    adapter: ModelAdapter,
+    data_categorized: dict[str, list],
+    *,
+    step: int = 5,
+    thresholds: list[float] | None = None,
+    n_random_seeds: int = 3,
+    image_base_path: Path,
+    run_dir: Path,
+) -> dict:
+    """
+    Evaluate optimized vs random mask KL across thresholds.
+
+    For each category and layer, binarises the optimized mask at each
+    threshold and compares its KL against random masks with the same
+    number of survivors.  Also evaluates the continuous (unbinarised)
+    optimized mask.  Results are saved to ``baseline_kl.json`` in
+    *run_dir*.
+
+    :param adapter: Model adapter instance.
+    :type adapter: ModelAdapter
+    :param data_categorized: Map of category name to list of data dicts.
+    :type data_categorized: dict[str, list]
+    :param step: Batch size for KL evaluation.
+    :type step: int
+    :param thresholds: Binarisation thresholds to sweep.  Defaults to
+        ``[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]``.
+    :type thresholds: list[float] | None
+    :param n_random_seeds: Number of random seeds to average over.
+    :type n_random_seeds: int
+    :param image_base_path: Root directory for image files.
+    :type image_base_path: Path
+    :param run_dir: DM run output directory (must contain mask ``.pt`` files).
+    :type run_dir: Path
+    :returns: Full results dict (also saved to ``baseline_kl.json``).
+    :rtype: dict
+    """
+    if thresholds is None:
+        thresholds = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+
+    from .dm_analysis import load_dm_masks
+    masks = load_dm_masks(run_dir)
+    layer_names = list(masks.keys())
+
+    results_path = run_dir / "baseline_kl.json"
+    results = {}
+    if results_path.exists():
+        import json
+        with open(results_path) as f:
+            results = json.load(f)
+
+    for name, data in tqdm(data_categorized.items(), desc="Baseline evaluation"):
+        cat_key = fs_safe(name)
+        if cat_key in results:
+            print(f'  Skipping "{name}" (already evaluated)')
+            continue
+
+        cat_results = {}
+
+        # Continuous (raw) optimized mask
+        opt_masks = {}
+        for ln in layer_names:
+            if cat_key in masks[ln]:
+                opt_masks[ln] = masks[ln][cat_key]
+        opt_kl = evaluate_mask_kl(
+            adapter, data, opt_masks,
+            step=step, image_base_path=image_base_path,
+        )
+        cat_results["continuous"] = {
+            "optimized_kl": opt_kl,
+        }
+
+        # Per-threshold sweep
+        for thr in thresholds:
+            thr_key = f"{thr:.2f}"
+            # Binarise optimized mask
+            bin_masks = {}
+            survivor_counts = {}
+            for ln, m in opt_masks.items():
+                binary = torch.where(m > thr, torch.ones_like(m), torch.zeros_like(m))
+                bin_masks[ln] = binary
+                survivor_counts[ln] = int((m > thr).sum().item())
+
+            bin_kl = evaluate_mask_kl(
+                adapter, data, bin_masks,
+                step=step, image_base_path=image_base_path,
+            )
+
+            # Random masks (average over seeds)
+            rand_kls = {ln: [] for ln in opt_masks}
+            for seed in range(n_random_seeds):
+                rand_masks = {}
+                for ln, n_surv in survivor_counts.items():
+                    n_dirs = opt_masks[ln].numel()
+                    gen = torch.Generator().manual_seed(seed)
+                    rm = torch.zeros(n_dirs)
+                    if n_surv > 0:
+                        idx = torch.randperm(n_dirs, generator=gen)[:n_surv]
+                        rm[idx] = 1.0
+                    rand_masks[ln] = rm
+
+                seed_kl = evaluate_mask_kl(
+                    adapter, data, rand_masks,
+                    step=step, image_base_path=image_base_path,
+                )
+                for ln in opt_masks:
+                    rand_kls[ln].append(seed_kl[ln])
+
+            cat_results[thr_key] = {
+                "survivors": survivor_counts,
+                "optimized_kl": bin_kl,
+                "random_kl_mean": {
+                    ln: sum(v) / len(v) for ln, v in rand_kls.items()
+                },
+                "random_kl_per_seed": {
+                    ln: v for ln, v in rand_kls.items()
+                },
+            }
+
+            for ln in opt_masks:
+                rmean = sum(rand_kls[ln]) / len(rand_kls[ln])
+                print(
+                    f'  {name}/{ln} thr={thr:.1f}: '
+                    f'{survivor_counts[ln]} dirs, '
+                    f'opt_kl={bin_kl[ln]:.6f}, '
+                    f'rand_kl={rmean:.6f}'
+                )
+
+        results[cat_key] = cat_results
+        save_json(results_path, results)
+
+    return results
 
 
 def run_dm(
