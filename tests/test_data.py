@@ -1,5 +1,6 @@
 import pytest
-from conn_intrp.data import relaxed_anls, best_anls, filter_categories
+
+from conn_intrp.data import best_anls, filter_categories, relaxed_anls
 
 
 def test_relaxed_anls_exact_match():

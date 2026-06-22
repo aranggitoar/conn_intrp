@@ -17,10 +17,11 @@ Main Classes:
     SVDLayer: Descriptor for one maskable linear layer in the connector.
 """
 
-import torch
 from dataclasses import dataclass
-from torch.nn import functional as F
 from pathlib import Path
+
+import torch
+from torch.nn import functional as F
 
 
 @dataclass
@@ -151,7 +152,9 @@ class ModelAdapter:
         raise NotImplementedError
 
     def merge_embeds(
-        self, inputs: dict, text_embeds: torch.Tensor,
+        self,
+        inputs: dict,
+        text_embeds: torch.Tensor,
         conn_out: torch.Tensor,
     ) -> torch.Tensor:
         """
@@ -169,7 +172,9 @@ class ModelAdapter:
         raise NotImplementedError
 
     def generate(
-        self, embeds: torch.Tensor, attention_mask: torch.Tensor,
+        self,
+        embeds: torch.Tensor,
+        attention_mask: torch.Tensor,
         max_new_tokens: int = 50,
     ) -> list[str]:
         """
@@ -187,7 +192,9 @@ class ModelAdapter:
         raise NotImplementedError
 
     def get_logits(
-        self, embeds: torch.Tensor, attention_mask: torch.Tensor,
+        self,
+        embeds: torch.Tensor,
+        attention_mask: torch.Tensor,
     ) -> torch.Tensor:
         """
         First-token logits from the language model.
@@ -215,7 +222,9 @@ class ModelAdapter:
         raise NotImplementedError
 
     def run_connector_layer_masked(
-        self, vision_out: torch.Tensor, layer_name: str,
+        self,
+        vision_out: torch.Tensor,
+        layer_name: str,
         W_masked: torch.Tensor,
     ) -> torch.Tensor:
         """
@@ -237,15 +246,17 @@ class ModelAdapter:
 
     def clear_cache(self):
         """Clear image and vision feature caches to free memory."""
-        if hasattr(self, '_image_cache'):
+        if hasattr(self, "_image_cache"):
             self._image_cache.clear()
-        if hasattr(self, '_vision_cache'):
+        if hasattr(self, "_vision_cache"):
             self._vision_cache.clear()
 
     # --- Default implementations (override if needed) -------------------------
 
     def run_connector_masked(
-        self, vision_out: torch.Tensor, W_masked: torch.Tensor,
+        self,
+        vision_out: torch.Tensor,
+        W_masked: torch.Tensor,
     ) -> torch.Tensor:
         """
         Connector forward with a masked weight matrix.

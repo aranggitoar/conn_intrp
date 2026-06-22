@@ -21,10 +21,11 @@ Main Functions:
 
 import datetime
 import json
-import torch
-import numpy as np
-from pathlib import Path
 from contextlib import contextmanager
+from pathlib import Path
+
+import numpy as np
+import torch
 
 
 def fs_safe(name: str) -> str:
@@ -33,8 +34,12 @@ def fs_safe(name: str) -> str:
 
 
 def make_run_dir(
-    base: str | Path, model_name: str, method: str,
-    tag: str | None = None, *, resume: bool = False,
+    base: str | Path,
+    model_name: str,
+    method: str,
+    tag: str | None = None,
+    *,
+    resume: bool = False,
 ) -> Path:
     """
     Create a timestamped output directory, or resume the latest one.
@@ -72,7 +77,9 @@ def make_run_dir(
 
 
 def find_latest_run(
-    base: str | Path, model_name: str, method: str,
+    base: str | Path,
+    model_name: str,
+    method: str,
 ) -> Path | None:
     """
     Find the most recent run directory for a given model and method.

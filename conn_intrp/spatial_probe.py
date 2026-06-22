@@ -23,8 +23,9 @@ Main Functions:
 """
 
 import math
-import torch
 from pathlib import Path
+
+import torch
 from torch.nn import functional as F
 from tqdm.auto import tqdm
 
@@ -33,9 +34,13 @@ from .output import fs_safe, save_json
 
 
 def run_spatial_probe(
-    adapter: ModelAdapter, data_categorized: dict[str, list], *,
-    directions: list[int], batch_size: int,
-    image_base_path: Path, run_dir: Path,
+    adapter: ModelAdapter,
+    data_categorized: dict[str, list],
+    *,
+    directions: list[int],
+    batch_size: int,
+    image_base_path: Path,
+    run_dir: Path,
 ) -> None:
     """
     Compute and save spatial probe projections for specified directions.
@@ -62,22 +67,23 @@ def run_spatial_probe(
 
     meta_path = run_dir / "metadata.json"
     if not meta_path.exists():
-        save_json(meta_path, {
-            "model": adapter.model_name,
-            "n_patches": adapter.n_patches,
-            "grid_size": grid_size,
-            "directions": directions,
-        })
+        save_json(
+            meta_path,
+            {
+                "model": adapter.model_name,
+                "n_patches": adapter.n_patches,
+                "grid_size": grid_size,
+                "directions": directions,
+            },
+        )
 
     completed_probe = {
-        name for name in data_categorized
+        name
+        for name in data_categorized
         if (run_dir / fs_safe(name) / "probe_projections.pt").exists()
     }
     if completed_probe:
-        print(
-            f"Resuming probe: skipping "
-            f"{len(completed_probe)} completed categories"
-        )
+        print(f"Resuming probe: skipping " f"{len(completed_probe)} completed categories")
 
     for name, data in tqdm(data_categorized.items(), desc="Spatial probe"):
         if name in completed_probe:
@@ -93,7 +99,7 @@ def run_spatial_probe(
             total=math.ceil(length / batch_size),
             desc=f'"{name}"',
         ):
-            batch = data[i:i + batch_size]
+            batch = data[i : i + batch_size]
             image_files.extend(datum["image"] for datum in batch)
 
             with torch.no_grad():
@@ -110,17 +116,13 @@ def run_spatial_probe(
         cat_dir = run_dir / fs_safe(name)
         cat_dir.mkdir(exist_ok=True)
 
-        result = {
-            layer: torch.cat(chunks, dim=0)
-            for layer, chunks in projections.items()
-        }
+        result = {layer: torch.cat(chunks, dim=0) for layer, chunks in projections.items()}
         torch.save(result, cat_dir / "probe_projections.pt")
 
         layer_meta = {}
         for layer, tensor in result.items():
             n_dirs_layer_full = (
-                adapter.n_dirs if layer == adapter.component_name
-                else tensor.shape[-1]
+                adapter.n_dirs if layer == adapter.component_name else tensor.shape[-1]
             )
             valid = [d for d in directions if d < n_dirs_layer_full]
             layer_meta[layer] = {
@@ -128,19 +130,25 @@ def run_spatial_probe(
                 "n_dirs_total": n_dirs_layer_full,
             }
 
-        save_json(cat_dir / "probe_meta.json", {
-            "category": name,
-            "n_images": length,
-            "directions_requested": directions,
-            "grid_size": grid_size,
-            "layers": layer_meta,
-            "image_files": image_files,
-        })
+        save_json(
+            cat_dir / "probe_meta.json",
+            {
+                "category": name,
+                "n_images": length,
+                "directions_requested": directions,
+                "grid_size": grid_size,
+                "layers": layer_meta,
+                "image_files": image_files,
+            },
+        )
 
 
 def plot_probe_heatmap(
-    image_path: str | Path, heatmap: torch.Tensor, *,
-    mode: str = "signed", upsample_size: tuple[int, int] | None = None,
+    image_path: str | Path,
+    heatmap: torch.Tensor,
+    *,
+    mode: str = "signed",
+    upsample_size: tuple[int, int] | None = None,
     ax=None,
 ):
     """
@@ -168,11 +176,15 @@ def plot_probe_heatmap(
     if upsample_size is None:
         upsample_size = (image.height, image.width)
 
-    heatmap_up = F.interpolate(
-        heatmap.float()[None, None],
-        size=upsample_size,
-        mode="nearest",
-    ).squeeze().cpu()
+    heatmap_up = (
+        F.interpolate(
+            heatmap.float()[None, None],
+            size=upsample_size,
+            mode="nearest",
+        )
+        .squeeze()
+        .cpu()
+    )
 
     if ax is None:
         _, ax = plt.subplots()
@@ -187,8 +199,12 @@ def plot_probe_heatmap(
 
 
 def save_probe_heatmaps(
-    image_path: str | Path, projection: torch.Tensor, *,
-    directions: list[int], grid_size: int, out_dir: str | Path,
+    image_path: str | Path,
+    projection: torch.Tensor,
+    *,
+    directions: list[int],
+    grid_size: int,
+    out_dir: str | Path,
     modes: tuple[str, ...] = ("signed", "abs"),
     layer_name: str = "",
 ) -> None:
@@ -227,6 +243,8 @@ def save_probe_heatmaps(
             plot_probe_heatmap(image_path, heatmap, mode=mode, ax=ax)
             fig.savefig(
                 out_dir / f"{prefix}{image_stem}_dir{dir_idx}_{mode}.png",
-                bbox_inches="tight", pad_inches=0, dpi=150,
+                bbox_inches="tight",
+                pad_inches=0,
+                dpi=150,
             )
             plt.close(fig)

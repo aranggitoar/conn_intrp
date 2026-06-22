@@ -21,14 +21,16 @@ Main Classes:
 
 import csv
 import datetime
-import torch
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from dataclasses import dataclass, asdict
+
+import torch
 
 
 @dataclass
 class DirectionalMaskingConfig:
     """Run record for a single category's directional masking training."""
+
     category: str
     model: str
     component: str
@@ -58,17 +60,19 @@ def save_dm_run(config: DirectionalMaskingConfig, mask: torch.Tensor) -> None:
     torch.save(mask.data, weight_file)
 
     row = asdict(config)
-    row.update({
-        "run_id": run_id,
-        "weight_file": weight_file,
-        "mask_min": mask.min().item(),
-        "mask_max": mask.max().item(),
-        "mask_mean": mask.mean().item(),
-        "final_below_half": config.below_half_per_epoch[-1],
-        "final_near_zero": config.near_zero_per_epoch[-1],
-        "final_kl": config.kl_per_epoch[-1],
-        "final_l1": config.l1_per_epoch[-1],
-    })
+    row.update(
+        {
+            "run_id": run_id,
+            "weight_file": weight_file,
+            "mask_min": mask.min().item(),
+            "mask_max": mask.max().item(),
+            "mask_mean": mask.mean().item(),
+            "final_below_half": config.below_half_per_epoch[-1],
+            "final_near_zero": config.near_zero_per_epoch[-1],
+            "final_kl": config.kl_per_epoch[-1],
+            "final_l1": config.l1_per_epoch[-1],
+        }
+    )
 
     file_exists = Path("experiment_log.csv").exists()
     with open("experiment_log.csv", "a", newline="") as f:

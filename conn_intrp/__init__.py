@@ -7,20 +7,30 @@ Pipeline phases:
   3. Spatial probe — visualize direction activation patterns
 """
 
-from .config import DirectionalMaskingConfig
-from .data import load_docvqa, HARNESS_PROMPT, best_anls, relaxed_anls, filter_categories
-from .output import (
-    make_run_dir, find_latest_run, save_json, update_metadata,
-    save_checkpoint, load_checkpoint,
-)
-from .dm import run_dm
 from .ablation import compute_category_means, run_ablation
-from .spatial_probe import run_spatial_probe, plot_probe_heatmap, save_probe_heatmaps
+from .config import DirectionalMaskingConfig
+from .data import HARNESS_PROMPT, best_anls, filter_categories, load_docvqa, relaxed_anls
+from .dm import run_dm
 from .dm_analysis import (
-    load_dm_masks, summary_table, survivors, ranked_directions,
-    distribution, overlap_matrix, jaccard_matrix, compare_categories,
+    compare_categories,
     direction_profile,
+    distribution,
+    jaccard_matrix,
+    load_dm_masks,
+    overlap_matrix,
+    ranked_directions,
+    summary_table,
+    survivors,
 )
+from .output import (
+    find_latest_run,
+    load_checkpoint,
+    make_run_dir,
+    save_checkpoint,
+    save_json,
+    update_metadata,
+)
+from .spatial_probe import plot_probe_heatmap, run_spatial_probe, save_probe_heatmaps
 
 __all__ = [
     "DirectionalMaskingConfig",

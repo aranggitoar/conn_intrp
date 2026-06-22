@@ -1,7 +1,8 @@
 import json
-import torch
-import numpy as np
 from pathlib import Path
+
+import numpy as np
+import torch
 
 from conn_intrp.output import _make_serializable, make_run_dir, save_json
 

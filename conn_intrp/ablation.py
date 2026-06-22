@@ -26,23 +26,32 @@ Main Functions:
 """
 
 import math
-import torch
-import numpy as np
-from torch.nn import functional as F
 from pathlib import Path
+
+import numpy as np
+import torch
+from torch.nn import functional as F
 from tqdm.auto import tqdm
 
 from .data import best_anls
 from .models.base import ModelAdapter
 from .output import (
-    fs_safe, save_json, update_metadata, save_checkpoint, load_checkpoint,
+    fs_safe,
     get_completed_categories,
+    load_checkpoint,
+    save_checkpoint,
+    save_json,
+    update_metadata,
 )
 
 
 def compute_category_means(
-    adapter: ModelAdapter, data_categorized: dict[str, list], *,
-    batch_size: int, image_base_path: Path, run_dir: Path,
+    adapter: ModelAdapter,
+    data_categorized: dict[str, list],
+    *,
+    batch_size: int,
+    image_base_path: Path,
+    run_dir: Path,
 ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor], torch.Tensor]:
     """
     Compute SVD coefficients and per-category/global mean vectors.
@@ -74,9 +83,7 @@ def compute_category_means(
     n_unique_images = 0
     seen_images = set()
 
-    for name, data in tqdm(
-        data_categorized.items(), desc="Computing category means"
-    ):
+    for name, data in tqdm(data_categorized.items(), desc="Computing category means"):
         if fs_safe(name) in completed:
             ckpt = load_checkpoint(run_dir, name)
             per_category_coefficients[name] = ckpt["coefficients"]
@@ -85,17 +92,13 @@ def compute_category_means(
             )
             for img_id in ckpt.get("new_image_ids", []):
                 seen_images.add(img_id)
-            global_mean_sum += ckpt.get(
-                "global_mean_contrib", torch.zeros(adapter.n_dirs)
-            )
+            global_mean_sum += ckpt.get("global_mean_contrib", torch.zeros(adapter.n_dirs))
             n_unique_images += ckpt.get("n_new_images", 0)
             print(f'  Loaded checkpoint for "{name}"')
             continue
 
         length = len(data)
-        cat_coefficients = torch.empty(
-            length, adapter.n_patches, adapter.n_dirs
-        )
+        cat_coefficients = torch.empty(length, adapter.n_patches, adapter.n_dirs)
         cat_global_contrib = torch.zeros(adapter.n_dirs, dtype=torch.float32)
         cat_new_images = []
 
@@ -104,20 +107,18 @@ def compute_category_means(
             total=math.ceil(length / batch_size),
             desc=f'"{name}"',
         ):
-            batch = data[i:i + batch_size]
+            batch = data[i : i + batch_size]
             inputs = adapter.preprocess(batch, image_base_path)
             coefficients = adapter.compute_coefficients(inputs)
             actual = coefficients.shape[0]
-            cat_coefficients[i:i + actual] = coefficients.cpu()
+            cat_coefficients[i : i + actual] = coefficients.cpu()
 
             for j, datum in enumerate(batch):
                 img_id = datum["image"]
                 if img_id not in seen_images:
                     seen_images.add(img_id)
                     cat_new_images.append(img_id)
-                    cat_global_contrib += (
-                        coefficients[j].mean(dim=0).cpu().float()
-                    )
+                    cat_global_contrib += coefficients[j].mean(dim=0).cpu().float()
 
         per_category_coefficients[name] = cat_coefficients
         per_category_a_star[name] = cat_coefficients.mean(dim=(0, 1)).to(
@@ -126,24 +127,29 @@ def compute_category_means(
         global_mean_sum += cat_global_contrib
         n_unique_images += len(cat_new_images)
 
-        save_checkpoint(run_dir, name, {
-            "coefficients": cat_coefficients,
-            "a_star": per_category_a_star[name].cpu(),
-            "new_image_ids": cat_new_images,
-            "global_mean_contrib": cat_global_contrib,
-            "n_new_images": len(cat_new_images),
-        })
+        save_checkpoint(
+            run_dir,
+            name,
+            {
+                "coefficients": cat_coefficients,
+                "a_star": per_category_a_star[name].cpu(),
+                "new_image_ids": cat_new_images,
+                "global_mean_contrib": cat_global_contrib,
+                "n_new_images": len(cat_new_images),
+            },
+        )
 
     global_a_star = (global_mean_sum / n_unique_images).to(
         dtype=adapter.compute_dtype, device="cuda"
     )
 
-    save_json(run_dir / "means.json", {
-        "n_unique_images": n_unique_images,
-        "per_category_sizes": {
-            n: len(d) for n, d in data_categorized.items()
+    save_json(
+        run_dir / "means.json",
+        {
+            "n_unique_images": n_unique_images,
+            "per_category_sizes": {n: len(d) for n, d in data_categorized.items()},
         },
-    })
+    )
 
     return per_category_coefficients, per_category_a_star, global_a_star
 
@@ -190,28 +196,27 @@ def run_ablation(
     :param run_dir: Output directory for this run.
     :type run_dir: Path
     """
-    update_metadata(run_dir, dict(
-        model=adapter.model_name,
-        directions=directions_to_ablate,
-        batch_size=batch_size,
-        K=K,
-        n_categories=len(data_categorized),
-        category_sizes={n: len(d) for n, d in data_categorized.items()},
-    ))
+    update_metadata(
+        run_dir,
+        dict(
+            model=adapter.model_name,
+            directions=directions_to_ablate,
+            batch_size=batch_size,
+            K=K,
+            n_categories=len(data_categorized),
+            category_sizes={n: len(d) for n, d in data_categorized.items()},
+        ),
+    )
 
     completed_ablation = {
-        name for name in data_categorized
+        name
+        for name in data_categorized
         if (run_dir / fs_safe(name) / "anls_summary.json").exists()
     }
     if completed_ablation:
-        print(
-            f"Resuming ablation: skipping "
-            f"{len(completed_ablation)} completed categories"
-        )
+        print(f"Resuming ablation: skipping " f"{len(completed_ablation)} completed categories")
 
-    for name, data in tqdm(
-        data_categorized.items(), desc="Ablation + ANLS"
-    ):
+    for name, data in tqdm(data_categorized.items(), desc="Ablation + ANLS"):
         if name in completed_ablation:
             print(f'  Skipping "{name}" (results exist)')
             continue
@@ -251,14 +256,14 @@ def run_ablation(
             total=math.ceil(length / batch_size),
             desc=f'"{name}"',
         ):
-            batch = data[i:i + batch_size]
+            batch = data[i : i + batch_size]
             actual = len(batch)
             targets_batch = [datum["answers"] for datum in batch]
 
             inputs = adapter.preprocess(batch, image_base_path)
             attention_mask = inputs["attention_mask"]
 
-            batch_coeff = per_category_coefficients[name][i:i + actual].to(
+            batch_coeff = per_category_coefficients[name][i : i + actual].to(
                 dtype=adapter.compute_dtype, device="cuda"
             )
             text_embeds = adapter.get_text_embeds(inputs)
@@ -327,8 +332,11 @@ def run_ablation(
 
                 gold_tok = [
                     adapter.processor.tokenizer(
-                        targets[0], add_special_tokens=False,
-                    )["input_ids"][-1]
+                        targets[0],
+                        add_special_tokens=False,
+                    )[
+                        "input_ids"
+                    ][-1]
                     for targets in targets_batch
                 ]
                 gold_idx = torch.tensor(gold_tok, device=logits_orig.device)
@@ -406,14 +414,14 @@ def run_ablation(
                     "signed_mean_*": "(vocab_size,) mean logit delta across images",
                     "abs_mean_*": "(vocab_size,) mean |logit delta| across images",
                     "topk_*": "(n_images, 4, K) top-K positive logit shifts; "
-                              "channels: [token_idx, logit_delta, prob_orig, prob_ablated]",
+                    "channels: [token_idx, logit_delta, prob_orig, prob_ablated]",
                     "botk_*": "(n_images, 4, K) top-K negative logit shifts; "
-                              "channels: [token_idx, logit_delta, prob_orig, prob_ablated]",
+                    "channels: [token_idx, logit_delta, prob_orig, prob_ablated]",
                     "kl_div_*": "(directions, n_images) KL divergence between original "
-                                "and ablated logit vectors",
+                    "and ablated logit vectors",
                     "delta_gold_prob_*": "(directions, n_images) difference between last "
-                                         "token's log probabiliy of original and ablated "
-                                         "logit vectors",
+                    "token's log probabiliy of original and ablated "
+                    "logit vectors",
                 },
                 **{
                     dir_idx: {
@@ -447,15 +455,18 @@ def run_ablation(
         anls_global = [sum(nls) / length for nls in nls_ablated_global]
         anls_zero = [sum(nls) / length for nls in nls_ablated_zero]
 
-        save_json(cat_dir / "anls_summary.json", dict(
-            category=name,
-            n_samples=length,
-            directions=directions_to_ablate,
-            anls_original=anls_orig,
-            anls_ablated_per_category_mean=anls_cat,
-            anls_ablated_global_mean=anls_global,
-            anls_ablated_zero_mean=anls_zero,
-        ))
+        save_json(
+            cat_dir / "anls_summary.json",
+            dict(
+                category=name,
+                n_samples=length,
+                directions=directions_to_ablate,
+                anls_original=anls_orig,
+                anls_ablated_per_category_mean=anls_cat,
+                anls_ablated_global_mean=anls_global,
+                anls_ablated_zero_mean=anls_zero,
+            ),
+        )
 
         print(
             f"\n{name}: orig={anls_orig:.4f}, "

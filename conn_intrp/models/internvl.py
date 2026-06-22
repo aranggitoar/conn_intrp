@@ -19,13 +19,14 @@ Main Functions:
     load_image: Load and tile an image for InternVL dynamic preprocessing.
 """
 
+from pathlib import Path
+
 import torch
 import torchvision.transforms as T
-from pathlib import Path
 from PIL import Image
 from torch.nn import functional as F
 from torchvision.transforms.functional import InterpolationMode
-from transformers import AutoProcessor, AutoModelForImageTextToText
+from transformers import AutoModelForImageTextToText, AutoProcessor
 
 from ..data import HARNESS_PROMPT
 from .base import ModelAdapter, SVDLayer
@@ -36,6 +37,7 @@ IMAGENET_STD = (0.229, 0.224, 0.225)
 
 # --- InternVL image preprocessing -------------------------------------------
 
+
 def _build_transform(input_size: int) -> T.Compose:
     """
     Build the InternVL image transform pipeline.
@@ -45,20 +47,25 @@ def _build_transform(input_size: int) -> T.Compose:
     :returns: Composed transform (RGB convert → resize → tensor → normalise).
     :rtype: torchvision.transforms.Compose
     """
-    return T.Compose([
-        T.Lambda(lambda img: img.convert("RGB") if img.mode != "RGB" else img),
-        T.Resize(
-            (input_size, input_size),
-            interpolation=InterpolationMode.BICUBIC,
-        ),
-        T.ToTensor(),
-        T.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
-    ])
+    return T.Compose(
+        [
+            T.Lambda(lambda img: img.convert("RGB") if img.mode != "RGB" else img),
+            T.Resize(
+                (input_size, input_size),
+                interpolation=InterpolationMode.BICUBIC,
+            ),
+            T.ToTensor(),
+            T.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+        ]
+    )
 
 
 def _find_closest_aspect_ratio(
-    aspect_ratio: float, target_ratios: list[tuple[int, int]],
-    width: int, height: int, image_size: int,
+    aspect_ratio: float,
+    target_ratios: list[tuple[int, int]],
+    width: int,
+    height: int,
+    image_size: int,
 ) -> tuple[int, int]:
     """
     Find the target tile ratio closest to *aspect_ratio*.
@@ -92,8 +99,11 @@ def _find_closest_aspect_ratio(
 
 
 def _dynamic_preprocess(
-    image: Image.Image, min_num: int = 1, max_num: int = 12,
-    image_size: int = 448, use_thumbnail: bool = False,
+    image: Image.Image,
+    min_num: int = 1,
+    max_num: int = 12,
+    image_size: int = 448,
+    use_thumbnail: bool = False,
 ) -> list[Image.Image]:
     """
     Tile an image into sub-crops following InternVL's dynamic resolution.
@@ -143,7 +153,9 @@ def _dynamic_preprocess(
 
 
 def load_image(
-    image_file: str | Path, input_size: int = 448, max_num: int = 12,
+    image_file: str | Path,
+    input_size: int = 448,
+    max_num: int = 12,
 ) -> torch.Tensor:
     """
     Load, tile, transform, and stack an image for InternVL.
@@ -159,9 +171,7 @@ def load_image(
     """
     image = Image.open(image_file).convert("RGB")
     transform = _build_transform(input_size=input_size)
-    images = _dynamic_preprocess(
-        image, image_size=input_size, use_thumbnail=True, max_num=max_num
-    )
+    images = _dynamic_preprocess(image, image_size=input_size, use_thumbnail=True, max_num=max_num)
     pixel_values = [transform(img) for img in images]
     return torch.stack(pixel_values)
 
@@ -193,16 +203,17 @@ class InternVLAdapter(ModelAdapter):
     """
 
     def __init__(
-        self, repo_id_hf: str, repo_id_conv: str | None = None,
-        dtype: torch.dtype = torch.bfloat16, cache_images: bool = True,
+        self,
+        repo_id_hf: str,
+        repo_id_conv: str | None = None,
+        dtype: torch.dtype = torch.bfloat16,
+        cache_images: bool = True,
         **model_kwargs,
     ):
         self.repo_id_hf = repo_id_hf
         self.compute_dtype = dtype
 
-        self.processor = AutoProcessor.from_pretrained(
-            repo_id_hf, trust_remote_code=True
-        )
+        self.processor = AutoProcessor.from_pretrained(repo_id_hf, trust_remote_code=True)
         self.processor.image_processor.max_patches = 1
         self.tokenizer = self.processor.tokenizer
         self.model = AutoModelForImageTextToText.from_pretrained(
@@ -225,17 +236,13 @@ class InternVLAdapter(ModelAdapter):
 
         self.model_name = "internvl3_5"
         self.component_name = "linear_2"
-        self.vocab_size = (
-            self.model.model.language_model
-            .get_input_embeddings().num_embeddings
-        )
+        self.vocab_size = self.model.model.language_model.get_input_embeddings().num_embeddings
         self.n_dirs = self.S.shape[0]
 
         self.downsample_ratio = self.model.config.downsample_ratio
         vis_cfg = self.model.config.vision_config
         self.num_image_token = int(
-            (vis_cfg.image_size[0] // vis_cfg.patch_size[0]) ** 2
-            * (self.downsample_ratio ** 2)
+            (vis_cfg.image_size[0] // vis_cfg.patch_size[0]) ** 2 * (self.downsample_ratio**2)
         )
         self.n_patches = self.num_image_token
 
@@ -248,14 +255,14 @@ class InternVLAdapter(ModelAdapter):
     @property
     def svd_layers(self) -> list[SVDLayer]:
         return [
-            SVDLayer("linear_1", self.U1, self.S1, self.Vt1,
-                     self.proj_bias1, self.S1.shape[0]),
-            SVDLayer("linear_2", self.U, self.S, self.Vt,
-                     self.proj_bias, self.n_dirs),
+            SVDLayer("linear_1", self.U1, self.S1, self.Vt1, self.proj_bias1, self.S1.shape[0]),
+            SVDLayer("linear_2", self.U, self.S, self.Vt, self.proj_bias, self.n_dirs),
         ]
 
     def run_connector_layer_masked(
-        self, vision_out: torch.Tensor, layer_name: str,
+        self,
+        vision_out: torch.Tensor,
+        layer_name: str,
         W_masked: torch.Tensor,
     ) -> torch.Tensor:
         if layer_name == "linear_1":
@@ -271,9 +278,7 @@ class InternVLAdapter(ModelAdapter):
     def _load_image(self, img_path: str) -> Image.Image:
         if self.cache_images:
             if img_path not in self._image_cache:
-                self._image_cache[img_path] = (
-                    Image.open(img_path).convert("RGB")
-                )
+                self._image_cache[img_path] = Image.open(img_path).convert("RGB")
             return self._image_cache[img_path]
         return Image.open(img_path).convert("RGB")
 
@@ -291,18 +296,30 @@ class InternVLAdapter(ModelAdapter):
         conversations = []
         for datum in batch:
             img_path = str(image_base_path / datum["image"])
-            conversations.append([
-                {"role": "system", "content": [
-                    {"type": "text", "text": HARNESS_PROMPT},
-                ]},
-                {"role": "user", "content": [
-                    {"type": "image", "image": self._load_image(img_path)},
-                    {"type": "text", "text": datum["question"]},
-                ]},
-            ])
+            conversations.append(
+                [
+                    {
+                        "role": "system",
+                        "content": [
+                            {"type": "text", "text": HARNESS_PROMPT},
+                        ],
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image", "image": self._load_image(img_path)},
+                            {"type": "text", "text": datum["question"]},
+                        ],
+                    },
+                ]
+            )
         return self.processor.apply_chat_template(
-            conversations, add_generation_prompt=True, padding=True,
-            tokenize=True, return_dict=True, return_tensors="pt",
+            conversations,
+            add_generation_prompt=True,
+            padding=True,
+            tokenize=True,
+            return_dict=True,
+            return_tensors="pt",
         ).to("cuda")
 
     def _get_selected_mask(self, inputs: dict) -> torch.Tensor:
@@ -316,10 +333,7 @@ class InternVLAdapter(ModelAdapter):
         """
         B, N = inputs["input_ids"].shape
         input_ids_flat = inputs["input_ids"].reshape(B * N)
-        return (
-            input_ids_flat
-            == self.tokenizer.convert_tokens_to_ids(IMG_CONTEXT_TOKEN)
-        )
+        return input_ids_flat == self.tokenizer.convert_tokens_to_ids(IMG_CONTEXT_TOKEN)
 
     def extract_vision(self, inputs: dict) -> torch.Tensor:
         """
@@ -338,12 +352,8 @@ class InternVLAdapter(ModelAdapter):
         ).last_hidden_state[:, 1:, :]
         h = w = int(vision_out.shape[1] ** 0.5)
         vision_out = vision_out.reshape(vision_out.shape[0], h, w, -1)
-        vision_out = self.model.model.pixel_shuffle(
-            vision_out, scale_factor=self.downsample_ratio
-        )
-        return vision_out.reshape(
-            vision_out.shape[0], -1, vision_out.shape[-1]
-        )
+        vision_out = self.model.model.pixel_shuffle(vision_out, scale_factor=self.downsample_ratio)
+        return vision_out.reshape(vision_out.shape[0], -1, vision_out.shape[-1])
 
     def pre_svd_forward(self, vision_out: torch.Tensor) -> torch.Tensor:
         """
@@ -378,12 +388,12 @@ class InternVLAdapter(ModelAdapter):
         :returns: Embeddings of shape ``(B, N, C)``.
         :rtype: torch.Tensor
         """
-        return self.model.model.language_model.get_input_embeddings()(
-            inputs["input_ids"]
-        )
+        return self.model.model.language_model.get_input_embeddings()(inputs["input_ids"])
 
     def merge_embeds(
-        self, inputs: dict, text_embeds: torch.Tensor,
+        self,
+        inputs: dict,
+        text_embeds: torch.Tensor,
         conn_out: torch.Tensor,
     ) -> torch.Tensor:
         """
@@ -401,13 +411,13 @@ class InternVLAdapter(ModelAdapter):
         B, N, C = text_embeds.shape
         selected = self._get_selected_mask(inputs)
         merged = text_embeds.reshape(B * N, C).clone()
-        merged[selected] = conn_out.to(
-            dtype=merged.dtype, device=merged.device
-        ).reshape(-1, C)
+        merged[selected] = conn_out.to(dtype=merged.dtype, device=merged.device).reshape(-1, C)
         return merged.reshape(B, N, C)
 
     def generate(
-        self, embeds: torch.Tensor, attention_mask: torch.Tensor,
+        self,
+        embeds: torch.Tensor,
+        attention_mask: torch.Tensor,
         max_new_tokens: int = 50,
     ) -> list[str]:
         """
@@ -431,7 +441,9 @@ class InternVLAdapter(ModelAdapter):
         return self.processor.batch_decode(out, skip_special_tokens=True)
 
     def get_logits(
-        self, embeds: torch.Tensor, attention_mask: torch.Tensor,
+        self,
+        embeds: torch.Tensor,
+        attention_mask: torch.Tensor,
     ) -> torch.Tensor:
         """
         Last-position logits from the language model.
@@ -453,10 +465,7 @@ class InternVLAdapter(ModelAdapter):
         )
         last_pos = attention_mask.sum(dim=1) - 1
         B = embeds.shape[0]
-        return torch.stack([
-            self.model.lm_head(text_out[0][b, last_pos[b], :])
-            for b in range(B)
-        ])
+        return torch.stack([self.model.lm_head(text_out[0][b, last_pos[b], :]) for b in range(B)])
 
     def compute_probe_projections(self, inputs: dict) -> dict[str, torch.Tensor]:
         """
@@ -482,10 +491,6 @@ class InternVLAdapter(ModelAdapter):
         gelu_f = gelu_out.float()
 
         return {
-            "linear_1": (
-                ln_f / (ln_f.norm(dim=-1, keepdim=True) + 1e-8)
-            ) @ self.Vt1.T.float(),
-            "linear_2": (
-                gelu_f / (gelu_f.norm(dim=-1, keepdim=True) + 1e-8)
-            ) @ self.Vt.T.float(),
+            "linear_1": (ln_f / (ln_f.norm(dim=-1, keepdim=True) + 1e-8)) @ self.Vt1.T.float(),
+            "linear_2": (gelu_f / (gelu_f.norm(dim=-1, keepdim=True) + 1e-8)) @ self.Vt.T.float(),
         }

@@ -15,11 +15,12 @@ Main Classes:
     SmolVLM2Adapter: ModelAdapter for SmolVLM2 single-linear connector.
 """
 
-import torch
 from pathlib import Path
+
+import torch
 from PIL import Image
 from torch.nn import functional as F
-from transformers import AutoProcessor, AutoModelForImageTextToText
+from transformers import AutoModelForImageTextToText, AutoProcessor
 
 from ..data import HARNESS_PROMPT
 from .base import ModelAdapter, SVDLayer
@@ -41,15 +42,16 @@ class SmolVLM2Adapter(ModelAdapter):
     """
 
     def __init__(
-        self, repo_id: str, dtype: torch.dtype = torch.float16,
-        cache_images: bool = True, **model_kwargs,
+        self,
+        repo_id: str,
+        dtype: torch.dtype = torch.float16,
+        cache_images: bool = True,
+        **model_kwargs,
     ):
         self.repo_id = repo_id
         self.compute_dtype = dtype
 
-        self.processor = AutoProcessor.from_pretrained(
-            repo_id, trust_remote_code=True
-        )
+        self.processor = AutoProcessor.from_pretrained(repo_id, trust_remote_code=True)
         self.processor.image_processor.do_image_splitting = False
 
         self.model = AutoModelForImageTextToText.from_pretrained(
@@ -60,25 +62,18 @@ class SmolVLM2Adapter(ModelAdapter):
         self.model.eval()
 
         proj = self.model.model.connector.modality_projection.proj
-        self.U, self.S, self.Vt = torch.linalg.svd(
-            proj.weight.float(), full_matrices=False
-        )
+        self.U, self.S, self.Vt = torch.linalg.svd(proj.weight.float(), full_matrices=False)
         self.proj_bias = proj.bias
 
         self.model_name = "smolvlm2"
         self.component_name = "proj"
-        self.vocab_size = (
-            self.model.model.text_model.embed_tokens.num_embeddings
-        )
+        self.vocab_size = self.model.model.text_model.embed_tokens.num_embeddings
         self.n_dirs = self.S.shape[0]
 
         vis = self.model.config.vision_config
         self.patch_size = vis.patch_size
         self.scale_factor = self.model.config.scale_factor
-        self.n_patches = (
-            (vis.image_size // vis.patch_size) ** 2
-            // self.scale_factor ** 2
-        )
+        self.n_patches = (vis.image_size // vis.patch_size) ** 2 // self.scale_factor**2
 
         self.cache_images = cache_images
         self._image_cache = {}
@@ -88,11 +83,12 @@ class SmolVLM2Adapter(ModelAdapter):
 
     @property
     def svd_layers(self) -> list[SVDLayer]:
-        return [SVDLayer("proj", self.U, self.S, self.Vt,
-                         self.proj_bias, self.n_dirs)]
+        return [SVDLayer("proj", self.U, self.S, self.Vt, self.proj_bias, self.n_dirs)]
 
     def run_connector_layer_masked(
-        self, vision_out: torch.Tensor, layer_name: str,
+        self,
+        vision_out: torch.Tensor,
+        layer_name: str,
         W_masked: torch.Tensor,
     ) -> torch.Tensor:
         hidden = self.pre_svd_forward(vision_out).to(W_masked.dtype)
@@ -102,9 +98,7 @@ class SmolVLM2Adapter(ModelAdapter):
     def _load_image(self, img_path: str) -> Image.Image:
         if self.cache_images:
             if img_path not in self._image_cache:
-                self._image_cache[img_path] = (
-                    Image.open(img_path).convert("RGB")
-                )
+                self._image_cache[img_path] = Image.open(img_path).convert("RGB")
             return self._image_cache[img_path]
         return Image.open(img_path).convert("RGB")
 
@@ -122,17 +116,25 @@ class SmolVLM2Adapter(ModelAdapter):
         prompts = []
         for datum in batch:
             img_path = str(image_base_path / datum["image"])
-            prompts.append([{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": HARNESS_PROMPT},
-                    {"type": "image", "image": self._load_image(img_path)},
-                    {"type": "text", "text": datum["question"]},
-                ],
-            }])
+            prompts.append(
+                [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": HARNESS_PROMPT},
+                            {"type": "image", "image": self._load_image(img_path)},
+                            {"type": "text", "text": datum["question"]},
+                        ],
+                    }
+                ]
+            )
         return self.processor.apply_chat_template(
-            prompts, add_generation_prompt=True, padding=True,
-            tokenize=True, return_dict=True, return_tensors="pt",
+            prompts,
+            add_generation_prompt=True,
+            padding=True,
+            tokenize=True,
+            return_dict=True,
+            return_tensors="pt",
         ).to("cuda")
 
     def extract_vision(self, inputs: dict) -> torch.Tensor:
@@ -153,9 +155,7 @@ class SmolVLM2Adapter(ModelAdapter):
         ).unfold(dimension=2, size=self.patch_size, step=self.patch_size)
         patch_attn = (patches_subgrid.sum(dim=(-1, -2)) > 0).bool()
 
-        vision_out = self.model.model.vision_model(
-            pixel_values.to(self.compute_dtype), patch_attn
-        )
+        vision_out = self.model.model.vision_model(pixel_values.to(self.compute_dtype), patch_attn)
         return self.model.model.connector.pixel_shuffle(
             vision_out.last_hidden_state, self.scale_factor
         )
@@ -193,12 +193,14 @@ class SmolVLM2Adapter(ModelAdapter):
         :returns: Embeddings of shape ``(B, N, C)``.
         :rtype: torch.Tensor
         """
-        return self.model.model.text_model.get_input_embeddings()(
-            inputs["input_ids"]
-        ).to(inputs["input_ids"].device)
+        return self.model.model.text_model.get_input_embeddings()(inputs["input_ids"]).to(
+            inputs["input_ids"].device
+        )
 
     def merge_embeds(
-        self, inputs: dict, text_embeds: torch.Tensor,
+        self,
+        inputs: dict,
+        text_embeds: torch.Tensor,
         conn_out: torch.Tensor,
     ) -> torch.Tensor:
         """
@@ -222,7 +224,9 @@ class SmolVLM2Adapter(ModelAdapter):
         )
 
     def generate(
-        self, embeds: torch.Tensor, attention_mask: torch.Tensor,
+        self,
+        embeds: torch.Tensor,
+        attention_mask: torch.Tensor,
         max_new_tokens: int = 50,
     ) -> list[str]:
         """
@@ -245,10 +249,12 @@ class SmolVLM2Adapter(ModelAdapter):
         return self.processor.batch_decode(out, skip_special_tokens=True)
 
     def get_logits(
-        self, embeds: torch.Tensor, attention_mask: torch.Tensor,
+        self,
+        embeds: torch.Tensor,
+        attention_mask: torch.Tensor,
     ) -> torch.Tensor:
         """
-        First-token logits, handling both left and right padding.
+        Last-position logits, handling both left and right padding.
 
         :param embeds: Merged input embeddings.
         :type embeds: torch.Tensor
@@ -265,10 +271,9 @@ class SmolVLM2Adapter(ModelAdapter):
         if self.processor.tokenizer.padding_side == "right":
             last_pos = attention_mask.sum(dim=1) - 1
             B = embeds.shape[0]
-            return torch.stack([
-                self.model.lm_head(text_out[0][b, last_pos[b], :])
-                for b in range(B)
-            ])
+            return torch.stack(
+                [self.model.lm_head(text_out[0][b, last_pos[b], :]) for b in range(B)]
+            )
         return self.model.lm_head(text_out[0][:, -1, :])
 
     def compute_probe_projections(self, inputs: dict) -> dict[str, torch.Tensor]:

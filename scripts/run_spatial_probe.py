@@ -12,7 +12,7 @@ Usage:
 import argparse
 from pathlib import Path
 
-from conn_intrp.data import load_docvqa, filter_categories
+from conn_intrp.data import filter_categories, load_docvqa
 from conn_intrp.output import make_run_dir
 from conn_intrp.spatial_probe import run_spatial_probe
 
@@ -24,7 +24,10 @@ def main():
     parser.add_argument("--categories", type=str, nargs="+", default=None)
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument(
-        "--directions", type=int, nargs="+", required=True,
+        "--directions",
+        type=int,
+        nargs="+",
+        required=True,
     )
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--dataset", type=str, default="dataset/docVQA")
@@ -32,9 +35,7 @@ def main():
     args = parser.parse_args()
 
     image_base_path = Path(args.dataset)
-    _, data_categorized = load_docvqa(
-        image_base_path / "train_v1.0_withQT.json"
-    )
+    _, data_categorized = load_docvqa(image_base_path / "train_v1.0_withQT.json")
     data_categorized = filter_categories(
         data_categorized,
         categories=args.categories,
@@ -43,19 +44,25 @@ def main():
 
     if args.internvl:
         from conn_intrp.models import InternVLAdapter
+
         adapter = InternVLAdapter("OpenGVLab/InternVL3_5-2B-HF")
         batch_size = args.batch_size or 1
     else:
         from conn_intrp.models import SmolVLM2Adapter
+
         adapter = SmolVLM2Adapter("HuggingFaceTB/SmolVLM2-500M-Video-Instruct")
         batch_size = args.batch_size or 5
 
     run_dir = make_run_dir(
-        Path(args.output), adapter.model_name, "probe", resume=args.resume,
+        Path(args.output),
+        adapter.model_name,
+        "probe",
+        resume=args.resume,
     )
 
     run_spatial_probe(
-        adapter, data_categorized,
+        adapter,
+        data_categorized,
         directions=args.directions,
         batch_size=batch_size,
         image_base_path=image_base_path,

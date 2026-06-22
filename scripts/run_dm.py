@@ -12,9 +12,9 @@ Usage:
 import argparse
 from pathlib import Path
 
-from conn_intrp.data import load_docvqa, filter_categories
-from conn_intrp.output import make_run_dir
+from conn_intrp.data import filter_categories, load_docvqa
 from conn_intrp.dm import run_dm
+from conn_intrp.output import make_run_dir
 
 
 def main():
@@ -26,25 +26,33 @@ def main():
     parser.add_argument("--sparsity-coef", type=float, default=5e-3)
     parser.add_argument("--lr", type=float, default=1.0)
     parser.add_argument("--epochs", type=int, default=10)
-    parser.add_argument("--step", type=int, default=None,
-                        help="Fixed batch size. Overrides --target-updates.")
-    parser.add_argument("--target-updates", type=int, default=None,
-                        help="Target gradient updates per epoch; step is "
-                             "derived per category from its size.")
-    parser.add_argument("--max-step", type=int, default=None,
-                        help="Cap auto-computed step (GPU memory limit).")
-    parser.add_argument("--patience", type=int, default=2,
-                        help="Early stop after this many stable epochs.")
-    parser.add_argument("--conv-threshold", type=float, default=0.02,
-                        help="Convergence threshold as fraction of n_dirs.")
+    parser.add_argument(
+        "--step", type=int, default=None, help="Fixed batch size. Overrides --target-updates."
+    )
+    parser.add_argument(
+        "--target-updates",
+        type=int,
+        default=None,
+        help="Target gradient updates per epoch; step is " "derived per category from its size.",
+    )
+    parser.add_argument(
+        "--max-step", type=int, default=None, help="Cap auto-computed step (GPU memory limit)."
+    )
+    parser.add_argument(
+        "--patience", type=int, default=2, help="Early stop after this many stable epochs."
+    )
+    parser.add_argument(
+        "--conv-threshold",
+        type=float,
+        default=0.02,
+        help="Convergence threshold as fraction of n_dirs.",
+    )
     parser.add_argument("--dataset", type=str, default="dataset/docVQA")
     parser.add_argument("--output", type=str, default="outputs")
     args = parser.parse_args()
 
     image_base_path = Path(args.dataset)
-    _, data_categorized = load_docvqa(
-        image_base_path / "train_v1.0_withQT.json"
-    )
+    _, data_categorized = load_docvqa(image_base_path / "train_v1.0_withQT.json")
     data_categorized = filter_categories(
         data_categorized,
         categories=args.categories,
@@ -53,10 +61,12 @@ def main():
 
     if args.internvl:
         from conn_intrp.models import InternVLAdapter
+
         adapter = InternVLAdapter("OpenGVLab/InternVL3_5-2B-HF")
         default_step = 1
     else:
         from conn_intrp.models import SmolVLM2Adapter
+
         adapter = SmolVLM2Adapter("HuggingFaceTB/SmolVLM2-500M-Video-Instruct")
         default_step = 5
 
@@ -66,11 +76,15 @@ def main():
         step = default_step
 
     run_dir = make_run_dir(
-        Path(args.output), adapter.model_name, "dm", resume=args.resume,
+        Path(args.output),
+        adapter.model_name,
+        "dm",
+        resume=args.resume,
     )
 
     run_dm(
-        adapter, data_categorized,
+        adapter,
+        data_categorized,
         sparsity_coef=args.sparsity_coef,
         lr=args.lr,
         epochs=args.epochs,

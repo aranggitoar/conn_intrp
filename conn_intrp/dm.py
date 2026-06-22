@@ -26,8 +26,9 @@ Main Functions:
 """
 
 import math
-import torch
 from pathlib import Path
+
+import torch
 from torch.nn import functional as F
 from tqdm.auto import tqdm
 
@@ -53,7 +54,10 @@ def _resolve_step(
 
 
 def _check_converged(
-    stats: dict, n_dirs: int, patience: int, conv_threshold: float,
+    stats: dict,
+    n_dirs: int,
+    patience: int,
+    conv_threshold: float,
 ) -> bool:
     """All layers' <0.5 and near-zero counts stable for *patience* epochs."""
     threshold = max(1, int(n_dirs * conv_threshold))
@@ -69,14 +73,19 @@ def _check_converged(
 
 
 def run_dm(
-    adapter: ModelAdapter, data_categorized: dict[str, list], *,
-    sparsity_coef: float, lr: float, epochs: int = 10,
+    adapter: ModelAdapter,
+    data_categorized: dict[str, list],
+    *,
+    sparsity_coef: float,
+    lr: float,
+    epochs: int = 10,
     step: int | None = None,
     target_updates_per_epoch: int | None = None,
     max_step: int | None = None,
     patience: int = 2,
     conv_threshold: float = 0.02,
-    image_base_path: Path, run_dir: Path,
+    image_base_path: Path,
+    run_dir: Path,
 ) -> None:
     """
     Train per-category directional masks for all question categories.
@@ -129,25 +138,26 @@ def run_dm(
     layers = adapter.svd_layers
     cache_vision = epochs > 1 or len(data_categorized) > 1
 
-    update_metadata(run_dir, dict(
-        model=adapter.model_name,
-        layers=[l.name for l in layers],
-        sparsity_coef=sparsity_coef,
-        lr=lr,
-        epochs=epochs,
-        step=step,
-        target_updates_per_epoch=target_updates_per_epoch,
-        max_step=max_step,
-        n_categories=len(data_categorized),
-        category_sizes={n: len(d) for n, d in data_categorized.items()},
-    ))
+    update_metadata(
+        run_dir,
+        dict(
+            model=adapter.model_name,
+            layers=[layer.name for layer in layers],
+            sparsity_coef=sparsity_coef,
+            lr=lr,
+            epochs=epochs,
+            step=step,
+            target_updates_per_epoch=target_updates_per_epoch,
+            max_step=max_step,
+            n_categories=len(data_categorized),
+            category_sizes={n: len(d) for n, d in data_categorized.items()},
+        ),
+    )
 
     completed = {
-        name for name in data_categorized
-        if all(
-            (run_dir / f"mask_{l.name}_{fs_safe(name)}.pt").exists()
-            for l in layers
-        )
+        name
+        for name in data_categorized
+        if all((run_dir / f"mask_{layer.name}_{fs_safe(name)}.pt").exists() for layer in layers)
     }
     if completed:
         print(f"Resuming: skipping {len(completed)} completed categories")
@@ -158,26 +168,31 @@ def run_dm(
             continue
 
         cat_step = _resolve_step(
-            len(data), step, target_updates_per_epoch, max_step,
+            len(data),
+            step,
+            target_updates_per_epoch,
+            max_step,
         )
         n_updates_ep = math.ceil(len(data) / cat_step)
-        print(
-            f'  "{name}": {len(data)} images, '
-            f"step={cat_step}, ~{n_updates_ep} updates/epoch"
-        )
+        print(f'  "{name}": {len(data)} images, ' f"step={cat_step}, ~{n_updates_ep} updates/epoch")
 
         masks = {}
         optimizers = {}
         stats = {}
         for layer in layers:
             mask = torch.full(
-                (layer.n_dirs,), 0.99, device=layer.S.device,
+                (layer.n_dirs,),
+                0.99,
+                device=layer.S.device,
                 requires_grad=True,
             )
             masks[layer.name] = mask
             optimizers[layer.name] = torch.optim.SGD([mask], lr=lr)
             stats[layer.name] = {
-                "kl": [], "l1": [], "below_half": [], "near_zero": [],
+                "kl": [],
+                "l1": [],
+                "below_half": [],
+                "near_zero": [],
             }
 
         length = len(data)
@@ -188,31 +203,29 @@ def run_dm(
             epoch_l1 = {ln: 0.0 for ln in masks}
             n_steps = 0
 
-            for batch_idx, i in enumerate(tqdm(
-                range(0, length, cat_step),
-                total=math.ceil(length / cat_step),
-                desc=f"  epoch {ep + 1}",
-                leave=False,
-            )):
-                batch = data[i:i + cat_step]
-                image_keys = [d['image'] for d in batch]
+            for batch_idx, i in enumerate(
+                tqdm(
+                    range(0, length, cat_step),
+                    total=math.ceil(length / cat_step),
+                    desc=f"  epoch {ep + 1}",
+                    leave=False,
+                )
+            ):
+                batch = data[i : i + cat_step]
+                image_keys = [d["image"] for d in batch]
                 all_vision_cached = cache_vision and all(
                     k in adapter._vision_cache for k in image_keys
                 )
 
-                if (epoch_cache is not None
-                        and ep > 0 and all_vision_cached):
+                if epoch_cache is not None and ep > 0 and all_vision_cached:
                     cached = epoch_cache[batch_idx]
                     inputs = {
-                        'input_ids': cached['input_ids'].cuda(),
-                        'attention_mask': cached['attention_mask'].cuda(),
+                        "input_ids": cached["input_ids"].cuda(),
+                        "attention_mask": cached["attention_mask"].cuda(),
                     }
-                    attention_mask = inputs['attention_mask']
-                    p_original = cached['p_original'].cuda()
-                    vision_out = torch.cat(
-                        [adapter._vision_cache[k].cuda()
-                         for k in image_keys]
-                    )
+                    attention_mask = inputs["attention_mask"]
+                    p_original = cached["p_original"].cuda()
+                    vision_out = torch.cat([adapter._vision_cache[k].cuda() for k in image_keys])
                     with torch.no_grad():
                         text_embeds = adapter.get_text_embeds(inputs)
                 else:
@@ -222,59 +235,44 @@ def run_dm(
                     with torch.no_grad():
                         if all_vision_cached:
                             vision_out = torch.cat(
-                                [adapter._vision_cache[k].cuda()
-                                 for k in image_keys]
+                                [adapter._vision_cache[k].cuda() for k in image_keys]
                             )
                         else:
                             vision_out = adapter.extract_vision(inputs)
                             if cache_vision:
                                 for j, k in enumerate(image_keys):
                                     if k not in adapter._vision_cache:
-                                        adapter._vision_cache[k] = (
-                                            vision_out[j:j + 1].cpu()
-                                        )
+                                        adapter._vision_cache[k] = vision_out[j : j + 1].cpu()
 
                         conn_out_orig = adapter.run_connector(vision_out)
                         text_embeds = adapter.get_text_embeds(inputs)
-                        embeds_orig = adapter.merge_embeds(
-                            inputs, text_embeds, conn_out_orig
-                        )
-                        logits_orig = adapter.get_logits(
-                            embeds_orig, attention_mask
-                        )
+                        embeds_orig = adapter.merge_embeds(inputs, text_embeds, conn_out_orig)
+                        logits_orig = adapter.get_logits(embeds_orig, attention_mask)
                         p_original = F.softmax(logits_orig, dim=-1)
                         del conn_out_orig, embeds_orig
 
                     if epoch_cache is not None and ep == 0:
-                        epoch_cache.append({
-                            'input_ids': inputs['input_ids'].cpu(),
-                            'attention_mask': attention_mask.cpu(),
-                            'p_original': p_original.cpu(),
-                        })
+                        epoch_cache.append(
+                            {
+                                "input_ids": inputs["input_ids"].cpu(),
+                                "attention_mask": attention_mask.cpu(),
+                                "p_original": p_original.cpu(),
+                            }
+                        )
 
                 for layer in layers:
                     ln = layer.name
                     mask = masks[ln]
                     S_masked = layer.S * mask
                     W_masked = layer.U @ torch.diag(S_masked) @ layer.Vt
-                    conn_out_masked = adapter.run_connector_layer_masked(
-                        vision_out, ln, W_masked
-                    )
+                    conn_out_masked = adapter.run_connector_layer_masked(vision_out, ln, W_masked)
 
-                    with torch.autocast(
-                        device_type="cuda", dtype=adapter.compute_dtype
-                    ):
-                        embeds_masked = adapter.merge_embeds(
-                            inputs, text_embeds, conn_out_masked
-                        )
-                        logits_masked = adapter.get_logits(
-                            embeds_masked, attention_mask
-                        )
+                    with torch.autocast(device_type="cuda", dtype=adapter.compute_dtype):
+                        embeds_masked = adapter.merge_embeds(inputs, text_embeds, conn_out_masked)
+                        logits_masked = adapter.get_logits(embeds_masked, attention_mask)
                     p_masked = F.log_softmax(logits_masked.float(), dim=-1)
 
-                    kl = F.kl_div(
-                        p_masked, p_original.float(), reduction="batchmean"
-                    )
+                    kl = F.kl_div(p_masked, p_original.float(), reduction="batchmean")
                     l1 = sparsity_coef * mask.sum()
                     loss = kl + l1
 
@@ -311,10 +309,7 @@ def run_dm(
 
             n_dirs = layers[0].n_dirs
             if patience and _check_converged(stats, n_dirs, patience, conv_threshold):
-                print(
-                    f'  "{name}" converged at epoch {ep + 1} '
-                    f"(stable for {patience} epochs)"
-                )
+                print(f'  "{name}" converged at epoch {ep + 1} ' f"(stable for {patience} epochs)")
                 break
 
         actual_epochs = ep + 1

@@ -22,11 +22,10 @@ Main Functions:
 """
 
 import json
-import torch
-import pandas as pd
 from pathlib import Path
 
-from .output import fs_safe
+import pandas as pd
+import torch
 
 
 def load_dm_masks(run_dir: str | Path) -> dict[str, dict[str, torch.Tensor]]:
@@ -66,17 +65,19 @@ def _read_layer_names(run_dir: Path) -> list[str]:
 
 
 def _split_by_layers(
-    rest: str, layer_names: list[str],
+    rest: str,
+    layer_names: list[str],
 ) -> tuple[str, str]:
     for ln in layer_names:
         prefix = ln + "_"
         if rest.startswith(prefix):
-            return ln, rest[len(prefix):]
+            return ln, rest[len(prefix) :]
     return rest.split("_", 1)[0], rest.split("_", 1)[1]
 
 
-def summary_table(masks: dict[str, dict[str, torch.Tensor]],
-                  threshold: float = 0.5) -> pd.DataFrame:
+def summary_table(
+    masks: dict[str, dict[str, torch.Tensor]], threshold: float = 0.5
+) -> pd.DataFrame:
     """
     One row per (layer, category) with survivor/dead counts and mean KL-relevant stats.
 
@@ -94,18 +95,25 @@ def summary_table(masks: dict[str, dict[str, torch.Tensor]],
             n = m.numel()
             surv = (m > threshold).sum().item()
             dead = (m < 0.05).sum().item()
-            rows.append(dict(
-                layer=layer, category=cat, n_dirs=n,
-                survivors=surv, dead=dead, mid=n - surv - dead,
-                mean_weight=m.mean().item(),
-                median_weight=m.median().item(),
-            ))
+            rows.append(
+                dict(
+                    layer=layer,
+                    category=cat,
+                    n_dirs=n,
+                    survivors=surv,
+                    dead=dead,
+                    mid=n - surv - dead,
+                    mean_weight=m.mean().item(),
+                    median_weight=m.median().item(),
+                )
+            )
     return pd.DataFrame(rows)
 
 
 def survivors(
     masks: dict[str, dict[str, torch.Tensor]],
-    layer: str, category: str,
+    layer: str,
+    category: str,
     threshold: float = 0.5,
 ) -> list[int]:
     """
@@ -128,7 +136,8 @@ def survivors(
 
 def ranked_directions(
     masks: dict[str, dict[str, torch.Tensor]],
-    layer: str, category: str,
+    layer: str,
+    category: str,
     top_k: int | None = None,
 ) -> pd.DataFrame:
     """
@@ -149,15 +158,18 @@ def ranked_directions(
     idx = m.argsort(descending=True)
     if top_k is not None:
         idx = idx[:top_k]
-    return pd.DataFrame({
-        "direction": idx.tolist(),
-        "weight": m[idx].tolist(),
-    })
+    return pd.DataFrame(
+        {
+            "direction": idx.tolist(),
+            "weight": m[idx].tolist(),
+        }
+    )
 
 
 def distribution(
     masks: dict[str, dict[str, torch.Tensor]],
-    layer: str, category: str,
+    layer: str,
+    category: str,
     bins: list[float] | None = None,
 ) -> pd.DataFrame:
     """
@@ -203,8 +215,7 @@ def overlap_matrix(
     :rtype: pd.DataFrame
     """
     cats = list(masks[layer].keys())
-    surv = {c: set(torch.where(masks[layer][c] > threshold)[0].tolist())
-            for c in cats}
+    surv = {c: set(torch.where(masks[layer][c] > threshold)[0].tolist()) for c in cats}
     data = [[len(surv[a] & surv[b]) for b in cats] for a in cats]
     return pd.DataFrame(data, index=cats, columns=cats)
 
@@ -227,8 +238,7 @@ def jaccard_matrix(
     :rtype: pd.DataFrame
     """
     cats = list(masks[layer].keys())
-    surv = {c: set(torch.where(masks[layer][c] > threshold)[0].tolist())
-            for c in cats}
+    surv = {c: set(torch.where(masks[layer][c] > threshold)[0].tolist()) for c in cats}
     data = []
     for a in cats:
         row = []
@@ -282,7 +292,9 @@ def direction_profile(
 
 def compare_categories(
     masks: dict[str, dict[str, torch.Tensor]],
-    layer: str, cat_a: str, cat_b: str,
+    layer: str,
+    cat_a: str,
+    cat_b: str,
     threshold: float = 0.5,
 ) -> dict[str, list[int]]:
     """

@@ -6,7 +6,7 @@ Re-exports :class:`SVDLayer`, :class:`SmolVLM2Adapter`, and
 """
 
 from .base import SVDLayer
-from .smolvlm2 import SmolVLM2Adapter
 from .internvl import InternVLAdapter
+from .smolvlm2 import SmolVLM2Adapter
 
 __all__ = ["SVDLayer", "SmolVLM2Adapter", "InternVLAdapter"]

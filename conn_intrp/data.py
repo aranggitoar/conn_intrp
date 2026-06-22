@@ -19,7 +19,6 @@ Main Functions:
 import json
 import random
 
-
 HARNESS_PROMPT = (
     "NO repeat the words in the question, NO 'the answer is', "
     "NO 'the document type is', NO 'the address is', and other "
@@ -68,6 +67,7 @@ def relaxed_anls(pred: str, gt: str, tau: float = 0.5) -> float:
     :rtype: float
     """
     import rapidfuzz.distance
+
     pred, gt = pred.strip().lower(), gt.strip().lower()
     if gt in pred:
         return 1.0
@@ -92,7 +92,8 @@ def best_anls(prediction: str, targets: list[str], tau: float = 0.5) -> float:
 
 
 def filter_categories(
-    data_categorized: dict[str, list], *,
+    data_categorized: dict[str, list],
+    *,
     categories: list[str] | None = None,
     max_samples: int | None = None,
 ) -> dict[str, list]:
