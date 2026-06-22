@@ -103,16 +103,59 @@ def evaluate_mask_kl(
     :returns: ``{layer_name: mean_kl}``
     :rtype: dict[str, float]
     """
+    results = evaluate_masks_kl(
+        adapter, data, [mask_weights],
+        step=step, image_base_path=image_base_path,
+    )
+    return results[0]
+
+
+def evaluate_masks_kl(
+    adapter: ModelAdapter,
+    data: list,
+    mask_sets: list[dict[str, torch.Tensor]],
+    *,
+    step: int = 5,
+    image_base_path: Path,
+    desc: str = "Evaluating mask KL",
+) -> list[dict[str, float]]:
+    """
+    Evaluate multiple mask sets in a single data pass.
+
+    The expensive forward pass (vision encoder, original logits) is
+    computed once per batch; each mask set's KL is then evaluated with
+    only the cheap masked-connector forward.
+
+    :param adapter: Model adapter instance.
+    :type adapter: ModelAdapter
+    :param data: List of data dicts (single category).
+    :type data: list
+    :param mask_sets: List of ``{layer_name: mask_tensor}`` dicts.
+    :type mask_sets: list[dict[str, torch.Tensor]]
+    :param step: Batch size.
+    :type step: int
+    :param image_base_path: Root directory for image files.
+    :type image_base_path: Path
+    :param desc: Progress bar description.
+    :type desc: str
+    :returns: One ``{layer_name: mean_kl}`` dict per mask set.
+    :rtype: list[dict[str, float]]
+    """
     layers = adapter.svd_layers
     length = len(data)
+    n_sets = len(mask_sets)
 
-    kl_sums = {ln: 0.0 for ln in mask_weights}
+    all_layer_names = set()
+    for ms in mask_sets:
+        all_layer_names.update(ms.keys())
+
+    kl_sums = [{ln: 0.0 for ln in ms} for ms in mask_sets]
     n_steps = 0
 
     for i in tqdm(
         range(0, length, step),
         total=math.ceil(length / step),
-        desc="Evaluating mask KL",
+        desc=desc,
         leave=False,
     ):
         batch = data[i : i + step]
@@ -130,30 +173,43 @@ def evaluate_mask_kl(
 
             for layer in layers:
                 ln = layer.name
-                if ln not in mask_weights:
+                if ln not in all_layer_names:
                     continue
-                mask = mask_weights[ln].to(device=layer.S.device)
-                S_masked = layer.S * mask
-                W_masked = layer.U @ torch.diag(S_masked) @ layer.Vt
-                conn_out_masked = adapter.run_connector_layer_masked(
-                    vision_out, ln, W_masked
-                )
 
-                with torch.autocast(device_type="cuda", dtype=adapter.compute_dtype):
-                    embeds_masked = adapter.merge_embeds(
-                        inputs, text_embeds, conn_out_masked
+                for si in range(n_sets):
+                    if ln not in mask_sets[si]:
+                        continue
+                    mask = mask_sets[si][ln].to(device=layer.S.device)
+                    S_masked = layer.S * mask
+                    W_masked = layer.U @ torch.diag(S_masked) @ layer.Vt
+                    conn_out_masked = adapter.run_connector_layer_masked(
+                        vision_out, ln, W_masked
                     )
-                    logits_masked = adapter.get_logits(embeds_masked, attention_mask)
-                p_masked = F.log_softmax(logits_masked.float(), dim=-1)
 
-                kl = F.kl_div(p_masked, p_original.float(), reduction="batchmean")
-                kl_sums[ln] += kl.item()
+                    with torch.autocast(
+                        device_type="cuda", dtype=adapter.compute_dtype
+                    ):
+                        embeds_masked = adapter.merge_embeds(
+                            inputs, text_embeds, conn_out_masked
+                        )
+                        logits_masked = adapter.get_logits(
+                            embeds_masked, attention_mask
+                        )
+                    p_masked = F.log_softmax(logits_masked.float(), dim=-1)
+
+                    kl = F.kl_div(
+                        p_masked, p_original.float(), reduction="batchmean"
+                    )
+                    kl_sums[si][ln] += kl.item()
 
         del vision_out
         torch.cuda.empty_cache()
         n_steps += 1
 
-    return {ln: kl_sums[ln] / max(n_steps, 1) for ln in mask_weights}
+    return [
+        {ln: kl_sums[si][ln] / max(n_steps, 1) for ln in mask_sets[si]}
+        for si in range(n_sets)
+    ]
 
 
 def evaluate_dm_baselines(
@@ -169,11 +225,10 @@ def evaluate_dm_baselines(
     """
     Evaluate optimized vs random mask KL across thresholds.
 
-    For each category and layer, binarises the optimized mask at each
-    threshold and compares its KL against random masks with the same
-    number of survivors.  Also evaluates the continuous (unbinarised)
-    optimized mask.  Results are saved to ``baseline_kl.json`` in
-    *run_dir*.
+    For each category, runs a single pass over the data and evaluates
+    all mask variants (continuous optimized, binarised at each threshold,
+    and random baselines) using cached forward passes.  Results are
+    saved incrementally to ``baseline_kl.json`` in *run_dir*.
 
     :param adapter: Model adapter instance.
     :type adapter: ModelAdapter
@@ -213,43 +268,30 @@ def evaluate_dm_baselines(
             print(f'  Skipping "{name}" (already evaluated)')
             continue
 
-        cat_results = {}
-
-        # Continuous (raw) optimized mask
         opt_masks = {}
         for ln in layer_names:
             if cat_key in masks[ln]:
                 opt_masks[ln] = masks[ln][cat_key]
-        opt_kl = evaluate_mask_kl(
-            adapter, data, opt_masks,
-            step=step, image_base_path=image_base_path,
-        )
-        cat_results["continuous"] = {
-            "optimized_kl": opt_kl,
-        }
 
-        # Per-threshold sweep
+        mask_sets = [opt_masks]
+        layout = [("continuous", None, None)]
+
         for thr in thresholds:
-            thr_key = f"{thr:.2f}"
-            # Binarise optimized mask
             bin_masks = {}
-            survivor_counts = {}
             for ln, m in opt_masks.items():
-                binary = torch.where(m > thr, torch.ones_like(m), torch.zeros_like(m))
+                binary = torch.where(
+                    m > thr, torch.ones_like(m), torch.zeros_like(m)
+                )
                 bin_masks[ln] = binary
-                survivor_counts[ln] = int((m > thr).sum().item())
 
-            bin_kl = evaluate_mask_kl(
-                adapter, data, bin_masks,
-                step=step, image_base_path=image_base_path,
-            )
+            mask_sets.append(bin_masks)
+            layout.append(("optimized", thr, None))
 
-            # Random masks (average over seeds)
-            rand_kls = {ln: [] for ln in opt_masks}
             for seed in range(n_random_seeds):
                 rand_masks = {}
-                for ln, n_surv in survivor_counts.items():
-                    n_dirs = opt_masks[ln].numel()
+                for ln, m in opt_masks.items():
+                    n_surv = int((m > thr).sum().item())
+                    n_dirs = m.numel()
                     gen = torch.Generator().manual_seed(seed)
                     rm = torch.zeros(n_dirs)
                     if n_surv > 0:
@@ -257,31 +299,67 @@ def evaluate_dm_baselines(
                         rm[idx] = 1.0
                     rand_masks[ln] = rm
 
-                seed_kl = evaluate_mask_kl(
-                    adapter, data, rand_masks,
-                    step=step, image_base_path=image_base_path,
-                )
-                for ln in opt_masks:
-                    rand_kls[ln].append(seed_kl[ln])
+                mask_sets.append(rand_masks)
+                layout.append(("random", thr, seed))
 
-            cat_results[thr_key] = {
-                "survivors": survivor_counts,
-                "optimized_kl": bin_kl,
-                "random_kl_mean": {
-                    ln: sum(v) / len(v) for ln, v in rand_kls.items()
-                },
-                "random_kl_per_seed": {
-                    ln: v for ln, v in rand_kls.items()
-                },
+        n_mask_sets = len(mask_sets)
+        print(
+            f'  "{name}": {len(data)} images, '
+            f"{n_mask_sets} mask variants ({len(thresholds)} thresholds × "
+            f"{n_random_seeds} seeds + continuous)"
+        )
+
+        all_kls = evaluate_masks_kl(
+            adapter, data, mask_sets,
+            step=step, image_base_path=image_base_path,
+            desc=f'  "{name}"',
+        )
+
+        cat_results = {
+            "continuous": {"optimized_kl": all_kls[0]},
+        }
+
+        for idx, (kind, thr, seed) in enumerate(layout):
+            if kind == "continuous":
+                continue
+            thr_key = f"{thr:.2f}"
+            if thr_key not in cat_results:
+                survivor_counts = {}
+                for ln, m in opt_masks.items():
+                    survivor_counts[ln] = int((m > thr).sum().item())
+                cat_results[thr_key] = {
+                    "survivors": survivor_counts,
+                    "optimized_kl": None,
+                    "random_kl_per_seed": {ln: [] for ln in opt_masks},
+                }
+
+            entry = cat_results[thr_key]
+            if kind == "optimized":
+                entry["optimized_kl"] = all_kls[idx]
+            elif kind == "random":
+                for ln in opt_masks:
+                    entry["random_kl_per_seed"][ln].append(all_kls[idx][ln])
+
+        for thr_key, entry in cat_results.items():
+            if thr_key == "continuous":
+                continue
+            entry["random_kl_mean"] = {
+                ln: sum(v) / len(v)
+                for ln, v in entry["random_kl_per_seed"].items()
             }
 
+        for thr in thresholds:
+            thr_key = f"{thr:.2f}"
+            entry = cat_results[thr_key]
             for ln in opt_masks:
-                rmean = sum(rand_kls[ln]) / len(rand_kls[ln])
+                opt_v = entry["optimized_kl"][ln]
+                rnd_v = entry["random_kl_mean"][ln]
+                n_s = entry["survivors"][ln]
                 print(
                     f'  {name}/{ln} thr={thr:.1f}: '
-                    f'{survivor_counts[ln]} dirs, '
-                    f'opt_kl={bin_kl[ln]:.6f}, '
-                    f'rand_kl={rmean:.6f}'
+                    f'{n_s} dirs, '
+                    f'opt_kl={opt_v:.6f}, '
+                    f'rand_kl={rnd_v:.6f}'
                 )
 
         results[cat_key] = cat_results
