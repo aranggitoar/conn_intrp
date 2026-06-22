@@ -25,11 +25,10 @@ Main Functions:
     run_ablation: Per-direction ablation with ANLS scoring and Δlogit extraction.
 """
 
-# FIXME: IMAGES BETWEEN CATEGORIES OVERLAP, GLOBAL MEAN ISN'T CLEAN
-
 import math
 import torch
 import numpy as np
+from torch.nn import functional as F
 from pathlib import Path
 from tqdm.auto import tqdm
 
@@ -225,24 +224,12 @@ def run_ablation(
         nls_ablated_zero = [[] for _ in directions_to_ablate]
         nls_original = []
 
-        delta_sum_cat = [
-            torch.zeros(adapter.vocab_size) for _ in directions_to_ablate
-        ]
-        delta_abs_sum_cat = [
-            torch.zeros(adapter.vocab_size) for _ in directions_to_ablate
-        ]
-        delta_sum_global = [
-            torch.zeros(adapter.vocab_size) for _ in directions_to_ablate
-        ]
-        delta_abs_sum_global = [
-            torch.zeros(adapter.vocab_size) for _ in directions_to_ablate
-        ]
-        delta_sum_zero = [
-            torch.zeros(adapter.vocab_size) for _ in directions_to_ablate
-        ]
-        delta_abs_sum_zero = [
-            torch.zeros(adapter.vocab_size) for _ in directions_to_ablate
-        ]
+        delta_sum_cat = [torch.zeros(adapter.vocab_size) for _ in directions_to_ablate]
+        delta_abs_sum_cat = [torch.zeros(adapter.vocab_size) for _ in directions_to_ablate]
+        delta_sum_global = [torch.zeros(adapter.vocab_size) for _ in directions_to_ablate]
+        delta_abs_sum_global = [torch.zeros(adapter.vocab_size) for _ in directions_to_ablate]
+        delta_sum_zero = [torch.zeros(adapter.vocab_size) for _ in directions_to_ablate]
+        delta_abs_sum_zero = [torch.zeros(adapter.vocab_size) for _ in directions_to_ablate]
 
         topk_cat = [[] for _ in directions_to_ablate]
         botk_cat = [[] for _ in directions_to_ablate]
@@ -250,6 +237,14 @@ def run_ablation(
         botk_global = [[] for _ in directions_to_ablate]
         topk_zero = [[] for _ in directions_to_ablate]
         botk_zero = [[] for _ in directions_to_ablate]
+
+        kl_div_cat = [[] for _ in directions_to_ablate]
+        kl_div_global = [[] for _ in directions_to_ablate]
+        kl_div_zero = [[] for _ in directions_to_ablate]
+
+        delta_gold_prob_cat = [[] for _ in directions_to_ablate]
+        delta_gold_prob_global = [[] for _ in directions_to_ablate]
+        delta_gold_prob_zero = [[] for _ in directions_to_ablate]
 
         for i in tqdm(
             range(0, length, batch_size),
@@ -269,12 +264,10 @@ def run_ablation(
             text_embeds = adapter.get_text_embeds(inputs)
 
             # --- Original (unablated) — once per batch ---
-            conn_out_orig = adapter.reconstruct(batch_coeff)
-            embeds_orig = adapter.merge_embeds(
-                inputs, text_embeds, conn_out_orig
-            )
-
             with torch.no_grad():
+                embeds_orig = adapter.merge_embeds(
+                    inputs, text_embeds, adapter.reconstruct(batch_coeff)
+                )
                 preds_orig = adapter.generate(embeds_orig, attention_mask)
                 logits_orig = adapter.get_logits(embeds_orig, attention_mask)
 
@@ -292,17 +285,17 @@ def run_ablation(
                 coeff_zero = batch_coeff.clone()
                 coeff_zero[..., dir_idx] = 0
 
-                embeds_cat = adapter.merge_embeds(
-                    inputs, text_embeds, adapter.reconstruct(coeff_cat)
-                )
-                embeds_global = adapter.merge_embeds(
-                    inputs, text_embeds, adapter.reconstruct(coeff_global)
-                )
-                embeds_zero = adapter.merge_embeds(
-                    inputs, text_embeds, adapter.reconstruct(coeff_zero)
-                )
-
                 with torch.no_grad():
+                    embeds_cat = adapter.merge_embeds(
+                        inputs, text_embeds, adapter.reconstruct(coeff_cat)
+                    )
+                    embeds_global = adapter.merge_embeds(
+                        inputs, text_embeds, adapter.reconstruct(coeff_global)
+                    )
+                    embeds_zero = adapter.merge_embeds(
+                        inputs, text_embeds, adapter.reconstruct(coeff_zero)
+                    )
+
                     preds_cat = adapter.generate(embeds_cat, attention_mask)
                     preds_global = adapter.generate(embeds_global, attention_mask)
                     preds_zero = adapter.generate(embeds_zero, attention_mask)
@@ -314,6 +307,40 @@ def run_ablation(
                 delta_global = (logits_orig - logits_global).cpu().float()
                 delta_zero = (logits_orig - logits_zero).cpu().float()
 
+                probs_orig = F.softmax(logits_orig, dim=-1)
+                probs_cat = F.softmax(logits_cat, dim=-1)
+                probs_global = F.softmax(logits_global, dim=-1)
+                probs_zero = F.softmax(logits_zero, dim=-1)
+                log_probs_cat = F.log_softmax(logits_cat, dim=-1)
+                log_probs_global = F.log_softmax(logits_global, dim=-1)
+                log_probs_zero = F.log_softmax(logits_zero, dim=-1)
+
+                kl_div_cat[j].extend(
+                    F.kl_div(log_probs_cat, probs_orig, reduction="none").sum(-1).cpu().tolist()
+                )
+                kl_div_global[j].extend(
+                    F.kl_div(log_probs_global, probs_orig, reduction="none").sum(-1).cpu().tolist()
+                )
+                kl_div_zero[j].extend(
+                    F.kl_div(log_probs_zero, probs_orig, reduction="none").sum(-1).cpu().tolist()
+                )
+
+                gold_tok = [
+                    adapter.processor.tokenizer(
+                        targets[0], add_special_tokens=False,
+                    )["input_ids"][-1]
+                    for targets in targets_batch
+                ]
+                gold_idx = torch.tensor(gold_tok, device=logits_orig.device)
+                log_probs_orig = F.log_softmax(logits_orig, dim=-1)
+                lp_orig = log_probs_orig[range(actual), gold_idx]
+                lp_cat = log_probs_cat[range(actual), gold_idx]
+                lp_global = log_probs_global[range(actual), gold_idx]
+                lp_zero = log_probs_zero[range(actual), gold_idx]
+                delta_gold_prob_cat[j].extend((lp_orig - lp_cat).cpu().tolist())
+                delta_gold_prob_global[j].extend((lp_orig - lp_global).cpu().tolist())
+                delta_gold_prob_zero[j].extend((lp_orig - lp_zero).cpu().tolist())
+
                 delta_sum_cat[j] += delta_cat.sum(dim=0)
                 delta_abs_sum_cat[j] += delta_cat.abs().sum(dim=0)
                 delta_sum_global[j] += delta_global.sum(dim=0)
@@ -323,18 +350,30 @@ def run_ablation(
 
                 top_v, top_i = delta_cat.topk(K, dim=-1)
                 bot_v, bot_i = (-delta_cat).topk(K, dim=-1)
-                topk_cat[j].append(torch.stack([top_i, top_v], dim=1))
-                botk_cat[j].append(torch.stack([bot_i, bot_v], dim=1))
+                top_p_orig = probs_orig.gather(-1, top_i.long())
+                bot_p_orig = probs_orig.gather(-1, bot_i.long())
+                top_p_cat = probs_cat.gather(-1, top_i.long())
+                bot_p_cat = probs_cat.gather(-1, bot_i.long())
+                topk_cat[j].append(torch.stack([top_i, top_v, top_p_orig, top_p_cat], dim=1))
+                botk_cat[j].append(torch.stack([bot_i, bot_v, bot_p_orig, bot_p_cat], dim=1))
 
                 top_v, top_i = delta_global.topk(K, dim=-1)
                 bot_v, bot_i = (-delta_global).topk(K, dim=-1)
-                topk_global[j].append(torch.stack([top_i, top_v], dim=1))
-                botk_global[j].append(torch.stack([bot_i, bot_v], dim=1))
+                top_p_orig = probs_orig.gather(-1, top_i.long())
+                bot_p_orig = probs_orig.gather(-1, bot_i.long())
+                top_p_global = probs_global.gather(-1, top_i.long())
+                bot_p_global = probs_global.gather(-1, bot_i.long())
+                topk_global[j].append(torch.stack([top_i, top_v, top_p_orig, top_p_global], dim=1))
+                botk_global[j].append(torch.stack([bot_i, bot_v, bot_p_orig, bot_p_global], dim=1))
 
                 top_v, top_i = delta_zero.topk(K, dim=-1)
                 bot_v, bot_i = (-delta_zero).topk(K, dim=-1)
-                topk_zero[j].append(torch.stack([top_i, top_v], dim=1))
-                botk_zero[j].append(torch.stack([bot_i, bot_v], dim=1))
+                top_p_orig = probs_orig.gather(-1, top_i.long())
+                bot_p_orig = probs_orig.gather(-1, bot_i.long())
+                top_p_zero = probs_zero.gather(-1, top_i.long())
+                bot_p_zero = probs_zero.gather(-1, bot_i.long())
+                topk_zero[j].append(torch.stack([top_i, top_v, top_p_orig, top_p_zero], dim=1))
+                botk_zero[j].append(torch.stack([bot_i, bot_v, bot_p_orig, bot_p_zero], dim=1))
 
                 for targets, pred in zip(targets_batch, preds_cat):
                     nls_ablated_cat[j].append(best_anls(pred, targets))
@@ -343,18 +382,9 @@ def run_ablation(
                 for targets, pred in zip(targets_batch, preds_zero):
                     nls_ablated_zero[j].append(best_anls(pred, targets))
 
-        # --- Concat topk/botk tensors ---
-        for j in range(len(directions_to_ablate)):
-            topk_cat[j] = torch.cat(topk_cat[j], dim=0)
-            botk_cat[j] = torch.cat(botk_cat[j], dim=0)
-            topk_global[j] = torch.cat(topk_global[j], dim=0)
-            botk_global[j] = torch.cat(botk_global[j], dim=0)
-            topk_zero[j] = torch.cat(topk_zero[j], dim=0)
-            botk_zero[j] = torch.cat(botk_zero[j], dim=0)
-
         # --- Save per-category results ---
         cat_dir = run_dir / fs_safe(name)
-        cat_dir.mkdir(exist_ok=True)
+        cat_dir.mkdir(parents=True, exist_ok=True)
 
         np.save(cat_dir / "nls_original.npy", np.array(nls_original))
         np.save(
@@ -372,21 +402,42 @@ def run_ablation(
 
         torch.save(
             {
-                dir_idx: {
-                    "signed_mean_cat": delta_sum_cat[j] / length,
-                    "abs_mean_cat": delta_abs_sum_cat[j] / length,
-                    "topk_cat": topk_cat[j],
-                    "botk_cat": botk_cat[j],
-                    "signed_mean_global": delta_sum_global[j] / length,
-                    "abs_mean_global": delta_abs_sum_global[j] / length,
-                    "topk_global": topk_global[j],
-                    "botk_global": botk_global[j],
-                    "signed_mean_zero": delta_sum_zero[j] / length,
-                    "abs_mean_zero": delta_abs_sum_zero[j] / length,
-                    "topk_zero": topk_zero[j],
-                    "botk_zero": botk_zero[j],
-                }
-                for j, dir_idx in enumerate(directions_to_ablate)
+                "_schema": {
+                    "signed_mean_*": "(vocab_size,) mean logit delta across images",
+                    "abs_mean_*": "(vocab_size,) mean |logit delta| across images",
+                    "topk_*": "(n_images, 4, K) top-K positive logit shifts; "
+                              "channels: [token_idx, logit_delta, prob_orig, prob_ablated]",
+                    "botk_*": "(n_images, 4, K) top-K negative logit shifts; "
+                              "channels: [token_idx, logit_delta, prob_orig, prob_ablated]",
+                    "kl_div_*": "(directions, n_images) KL divergence between original "
+                                "and ablated logit vectors",
+                    "delta_gold_prob_*": "(directions, n_images) difference between last "
+                                         "token's log probabiliy of original and ablated "
+                                         "logit vectors",
+                },
+                **{
+                    dir_idx: {
+                        "signed_mean_cat": delta_sum_cat[j] / length,
+                        "abs_mean_cat": delta_abs_sum_cat[j] / length,
+                        "topk_cat": torch.cat(topk_cat[j], dim=0),
+                        "botk_cat": torch.cat(botk_cat[j], dim=0),
+                        "kl_div_cat": kl_div_cat[j],
+                        "delta_gold_prob_cat": delta_gold_prob_cat[j],
+                        "signed_mean_global": delta_sum_global[j] / length,
+                        "abs_mean_global": delta_abs_sum_global[j] / length,
+                        "topk_global": torch.cat(topk_global[j], dim=0),
+                        "botk_global": torch.cat(botk_global[j], dim=0),
+                        "kl_div_global": kl_div_global[j],
+                        "delta_gold_prob_global": delta_gold_prob_global[j],
+                        "signed_mean_zero": delta_sum_zero[j] / length,
+                        "abs_mean_zero": delta_abs_sum_zero[j] / length,
+                        "topk_zero": torch.cat(topk_zero[j], dim=0),
+                        "botk_zero": torch.cat(botk_zero[j], dim=0),
+                        "kl_div_zero": kl_div_zero[j],
+                        "delta_gold_prob_zero": delta_gold_prob_zero[j],
+                    }
+                    for j, dir_idx in enumerate(directions_to_ablate)
+                },
             },
             cat_dir / "delta_logits.pt",
         )
@@ -409,6 +460,6 @@ def run_ablation(
         print(
             f"\n{name}: orig={anls_orig:.4f}, "
             f"cat={[f'{a:.4f}' for a in anls_cat]}, "
-            f"global={[f'{a:.4f}' for a in anls_global]}"
+            f"global={[f'{a:.4f}' for a in anls_global]}, "
             f"zero={[f'{a:.4f}' for a in anls_zero]}"
         )
