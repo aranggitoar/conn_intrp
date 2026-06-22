@@ -8,6 +8,7 @@ Pipeline phases:
 """
 
 from .ablation import compute_category_means, run_ablation
+from .cka import linear_cka
 from .config import DirectionalMaskingConfig
 from .data import HARNESS_PROMPT, best_anls, filter_categories, load_docvqa, relaxed_anls
 from .dm import run_dm
@@ -17,7 +18,9 @@ from .dm_analysis import (
     distribution,
     jaccard_matrix,
     load_dm_masks,
+    mask_agreement,
     overlap_matrix,
+    random_mask,
     ranked_directions,
     summary_table,
     survivors,
@@ -60,4 +63,7 @@ __all__ = [
     "jaccard_matrix",
     "compare_categories",
     "direction_profile",
+    "random_mask",
+    "mask_agreement",
+    "linear_cka",
 ]

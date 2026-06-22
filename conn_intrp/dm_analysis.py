@@ -295,6 +295,76 @@ def direction_profile(
     return pd.DataFrame(data)
 
 
+def random_mask(
+    n_dirs: int, n_survivors: int, seed: int = 0,
+) -> torch.Tensor:
+    """
+    Generate a binary-ish mask with *n_survivors* random directions on.
+
+    Surviving directions get weight 0.99 (matching optimized-mask init),
+    the rest get 0.01.  Use as a baseline to compare against optimized masks.
+
+    :param n_dirs: Total number of directions.
+    :type n_dirs: int
+    :param n_survivors: How many directions to mark as surviving.
+    :type n_survivors: int
+    :param seed: RNG seed for reproducibility.
+    :type seed: int
+    :returns: Mask tensor of shape ``(n_dirs,)``.
+    :rtype: torch.Tensor
+    """
+    gen = torch.Generator().manual_seed(seed)
+    mask = torch.full((n_dirs,), 0.01)
+    indices = torch.randperm(n_dirs, generator=gen)[:n_survivors]
+    mask[indices] = 0.99
+    return mask
+
+
+def mask_agreement(
+    masks_a: dict[str, dict[str, torch.Tensor]],
+    masks_b: dict[str, dict[str, torch.Tensor]],
+    layer: str,
+    category: str,
+    threshold: float = 0.5,
+) -> dict[str, float | int]:
+    """
+    Compare two runs' masks for the same layer and category.
+
+    Returns Jaccard similarity of survivor sets, Pearson correlation
+    of raw weights, and set-difference counts.
+
+    :param masks_a: First run's masks from :func:`load_dm_masks`.
+    :type masks_a: dict[str, dict[str, torch.Tensor]]
+    :param masks_b: Second run's masks from :func:`load_dm_masks`.
+    :type masks_b: dict[str, dict[str, torch.Tensor]]
+    :param layer: Layer name.
+    :type layer: str
+    :param category: Category name.
+    :type category: str
+    :param threshold: Survivor threshold.
+    :type threshold: float
+    :returns: Dict with ``jaccard``, ``weight_correlation``, ``shared``,
+        ``only_a``, ``only_b``, ``survivors_a``, ``survivors_b``.
+    :rtype: dict[str, float | int]
+    """
+    ma = masks_a[layer][category]
+    mb = masks_b[layer][category]
+    sa = set(torch.where(ma > threshold)[0].tolist())
+    sb = set(torch.where(mb > threshold)[0].tolist())
+    union = len(sa | sb)
+    jaccard = len(sa & sb) / union if union else 1.0
+    correlation = torch.corrcoef(torch.stack([ma.float(), mb.float()]))[0, 1].item()
+    return {
+        "jaccard": jaccard,
+        "weight_correlation": correlation,
+        "shared": len(sa & sb),
+        "only_a": len(sa - sb),
+        "only_b": len(sb - sa),
+        "survivors_a": len(sa),
+        "survivors_b": len(sb),
+    }
+
+
 def compare_categories(
     masks: dict[str, dict[str, torch.Tensor]],
     layer: str,

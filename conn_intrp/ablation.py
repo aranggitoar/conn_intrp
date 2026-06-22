@@ -8,7 +8,7 @@ Two-stage pipeline:
 2. :func:`run_ablation` — replace each direction with its mean, reconstruct,
    generate, score ANLS, and extract Δlogit artifacts.
 
-Baselines: per-category mean, global mean.
+Baselines: per-category mean, global mean, zero, random.
 
 Example::
 
@@ -166,14 +166,18 @@ def run_ablation(
     K: int,
     image_base_path: Path,
     run_dir: Path,
+    rand_seed: int = 42,
 ) -> None:
     """
     Per-direction ablation with ANLS scoring and Δlogit extraction.
 
-    For each direction and baseline (per-category mean, global mean):
-    replaces the coefficient, reconstructs, generates, scores ANLS, and
-    extracts first-token Δlogit artifacts (signed mean, abs mean, top-K,
-    bottom-K).
+    For each direction and baseline (per-category mean, global mean,
+    zero, random):  replaces the coefficient, reconstructs, generates,
+    scores ANLS, and extracts first-token Δlogit artifacts (signed mean,
+    abs mean, top-K, bottom-K, KL divergence, gold-token probability shift).
+
+    The random baseline samples from ``N(cat_mean, cat_std)`` for each
+    direction, seeded by *rand_seed* for reproducibility.
 
     :param adapter: Model adapter instance.
     :type adapter: ModelAdapter
@@ -195,6 +199,8 @@ def run_ablation(
     :type image_base_path: Path
     :param run_dir: Output directory for this run.
     :type run_dir: Path
+    :param rand_seed: Seed for the random baseline generator.
+    :type rand_seed: int
     """
     update_metadata(
         run_dir,
@@ -203,6 +209,7 @@ def run_ablation(
             directions=directions_to_ablate,
             batch_size=batch_size,
             K=K,
+            rand_seed=rand_seed,
             n_categories=len(data_categorized),
             category_sizes={n: len(d) for n, d in data_categorized.items()},
         ),
@@ -214,7 +221,7 @@ def run_ablation(
         if (run_dir / fs_safe(name) / "anls_summary.json").exists()
     }
     if completed_ablation:
-        print(f"Resuming ablation: skipping " f"{len(completed_ablation)} completed categories")
+        print(f"Resuming ablation: skipping {len(completed_ablation)} completed categories")
 
     for name, data in tqdm(data_categorized.items(), desc="Ablation + ANLS"):
         if name in completed_ablation:
@@ -223,10 +230,13 @@ def run_ablation(
 
         length = len(data)
         cat_a_star = per_category_a_star[name]
+        cat_std = per_category_coefficients[name].float().std(dim=(0, 1))
+        rand_gen = torch.Generator().manual_seed(rand_seed)
 
         nls_ablated_cat = [[] for _ in directions_to_ablate]
         nls_ablated_global = [[] for _ in directions_to_ablate]
         nls_ablated_zero = [[] for _ in directions_to_ablate]
+        nls_ablated_rand = [[] for _ in directions_to_ablate]
         nls_original = []
 
         delta_sum_cat = [torch.zeros(adapter.vocab_size) for _ in directions_to_ablate]
@@ -235,6 +245,8 @@ def run_ablation(
         delta_abs_sum_global = [torch.zeros(adapter.vocab_size) for _ in directions_to_ablate]
         delta_sum_zero = [torch.zeros(adapter.vocab_size) for _ in directions_to_ablate]
         delta_abs_sum_zero = [torch.zeros(adapter.vocab_size) for _ in directions_to_ablate]
+        delta_sum_rand = [torch.zeros(adapter.vocab_size) for _ in directions_to_ablate]
+        delta_abs_sum_rand = [torch.zeros(adapter.vocab_size) for _ in directions_to_ablate]
 
         topk_cat = [[] for _ in directions_to_ablate]
         botk_cat = [[] for _ in directions_to_ablate]
@@ -242,14 +254,18 @@ def run_ablation(
         botk_global = [[] for _ in directions_to_ablate]
         topk_zero = [[] for _ in directions_to_ablate]
         botk_zero = [[] for _ in directions_to_ablate]
+        topk_rand = [[] for _ in directions_to_ablate]
+        botk_rand = [[] for _ in directions_to_ablate]
 
         kl_div_cat = [[] for _ in directions_to_ablate]
         kl_div_global = [[] for _ in directions_to_ablate]
         kl_div_zero = [[] for _ in directions_to_ablate]
+        kl_div_rand = [[] for _ in directions_to_ablate]
 
         delta_gold_prob_cat = [[] for _ in directions_to_ablate]
         delta_gold_prob_global = [[] for _ in directions_to_ablate]
         delta_gold_prob_zero = [[] for _ in directions_to_ablate]
+        delta_gold_prob_rand = [[] for _ in directions_to_ablate]
 
         for i in tqdm(
             range(0, length, batch_size),
@@ -290,6 +306,17 @@ def run_ablation(
                 coeff_zero = batch_coeff.clone()
                 coeff_zero[..., dir_idx] = 0
 
+                coeff_rand = batch_coeff.clone()
+                rand_vals = (
+                    cat_a_star[dir_idx]
+                    + torch.randn(
+                        *batch_coeff.shape[:-1],
+                        generator=rand_gen,
+                    ).to(device=batch_coeff.device, dtype=batch_coeff.dtype)
+                    * cat_std[dir_idx].to(batch_coeff.device, batch_coeff.dtype)
+                )
+                coeff_rand[..., dir_idx] = rand_vals
+
                 with torch.no_grad():
                     embeds_cat = adapter.merge_embeds(
                         inputs, text_embeds, adapter.reconstruct(coeff_cat)
@@ -300,25 +327,33 @@ def run_ablation(
                     embeds_zero = adapter.merge_embeds(
                         inputs, text_embeds, adapter.reconstruct(coeff_zero)
                     )
+                    embeds_rand = adapter.merge_embeds(
+                        inputs, text_embeds, adapter.reconstruct(coeff_rand)
+                    )
 
                     preds_cat = adapter.generate(embeds_cat, attention_mask)
                     preds_global = adapter.generate(embeds_global, attention_mask)
                     preds_zero = adapter.generate(embeds_zero, attention_mask)
+                    preds_rand = adapter.generate(embeds_rand, attention_mask)
                     logits_cat = adapter.get_logits(embeds_cat, attention_mask)
                     logits_global = adapter.get_logits(embeds_global, attention_mask)
                     logits_zero = adapter.get_logits(embeds_zero, attention_mask)
+                    logits_rand = adapter.get_logits(embeds_rand, attention_mask)
 
                 delta_cat = (logits_orig - logits_cat).cpu().float()
                 delta_global = (logits_orig - logits_global).cpu().float()
                 delta_zero = (logits_orig - logits_zero).cpu().float()
+                delta_rand = (logits_orig - logits_rand).cpu().float()
 
                 probs_orig = F.softmax(logits_orig, dim=-1)
                 probs_cat = F.softmax(logits_cat, dim=-1)
                 probs_global = F.softmax(logits_global, dim=-1)
                 probs_zero = F.softmax(logits_zero, dim=-1)
+                probs_rand = F.softmax(logits_rand, dim=-1)
                 log_probs_cat = F.log_softmax(logits_cat, dim=-1)
                 log_probs_global = F.log_softmax(logits_global, dim=-1)
                 log_probs_zero = F.log_softmax(logits_zero, dim=-1)
+                log_probs_rand = F.log_softmax(logits_rand, dim=-1)
 
                 kl_div_cat[j].extend(
                     F.kl_div(log_probs_cat, probs_orig, reduction="none").sum(-1).cpu().tolist()
@@ -328,6 +363,9 @@ def run_ablation(
                 )
                 kl_div_zero[j].extend(
                     F.kl_div(log_probs_zero, probs_orig, reduction="none").sum(-1).cpu().tolist()
+                )
+                kl_div_rand[j].extend(
+                    F.kl_div(log_probs_rand, probs_orig, reduction="none").sum(-1).cpu().tolist()
                 )
 
                 gold_tok = [
@@ -345,9 +383,11 @@ def run_ablation(
                 lp_cat = log_probs_cat[range(actual), gold_idx]
                 lp_global = log_probs_global[range(actual), gold_idx]
                 lp_zero = log_probs_zero[range(actual), gold_idx]
+                lp_rand = log_probs_rand[range(actual), gold_idx]
                 delta_gold_prob_cat[j].extend((lp_orig - lp_cat).cpu().tolist())
                 delta_gold_prob_global[j].extend((lp_orig - lp_global).cpu().tolist())
                 delta_gold_prob_zero[j].extend((lp_orig - lp_zero).cpu().tolist())
+                delta_gold_prob_rand[j].extend((lp_orig - lp_rand).cpu().tolist())
 
                 delta_sum_cat[j] += delta_cat.sum(dim=0)
                 delta_abs_sum_cat[j] += delta_cat.abs().sum(dim=0)
@@ -355,6 +395,8 @@ def run_ablation(
                 delta_abs_sum_global[j] += delta_global.abs().sum(dim=0)
                 delta_sum_zero[j] += delta_zero.sum(dim=0)
                 delta_abs_sum_zero[j] += delta_zero.abs().sum(dim=0)
+                delta_sum_rand[j] += delta_rand.sum(dim=0)
+                delta_abs_sum_rand[j] += delta_rand.abs().sum(dim=0)
 
                 top_v, top_i = delta_cat.topk(K, dim=-1)
                 bot_v, bot_i = (-delta_cat).topk(K, dim=-1)
@@ -383,12 +425,23 @@ def run_ablation(
                 topk_zero[j].append(torch.stack([top_i, top_v, top_p_orig, top_p_zero], dim=1))
                 botk_zero[j].append(torch.stack([bot_i, bot_v, bot_p_orig, bot_p_zero], dim=1))
 
+                top_v, top_i = delta_rand.topk(K, dim=-1)
+                bot_v, bot_i = (-delta_rand).topk(K, dim=-1)
+                top_p_orig = probs_orig.gather(-1, top_i.long())
+                bot_p_orig = probs_orig.gather(-1, bot_i.long())
+                top_p_rand = probs_rand.gather(-1, top_i.long())
+                bot_p_rand = probs_rand.gather(-1, bot_i.long())
+                topk_rand[j].append(torch.stack([top_i, top_v, top_p_orig, top_p_rand], dim=1))
+                botk_rand[j].append(torch.stack([bot_i, bot_v, bot_p_orig, bot_p_rand], dim=1))
+
                 for targets, pred in zip(targets_batch, preds_cat):
                     nls_ablated_cat[j].append(best_anls(pred, targets))
                 for targets, pred in zip(targets_batch, preds_global):
                     nls_ablated_global[j].append(best_anls(pred, targets))
                 for targets, pred in zip(targets_batch, preds_zero):
                     nls_ablated_zero[j].append(best_anls(pred, targets))
+                for targets, pred in zip(targets_batch, preds_rand):
+                    nls_ablated_rand[j].append(best_anls(pred, targets))
 
         # --- Save per-category results ---
         cat_dir = run_dir / fs_safe(name)
@@ -406,6 +459,10 @@ def run_ablation(
         np.save(
             cat_dir / "nls_ablated_zero.npy",
             np.array(nls_ablated_zero, dtype=object),
+        )
+        np.save(
+            cat_dir / "nls_ablated_rand.npy",
+            np.array(nls_ablated_rand, dtype=object),
         )
 
         torch.save(
@@ -443,6 +500,12 @@ def run_ablation(
                         "botk_zero": torch.cat(botk_zero[j], dim=0),
                         "kl_div_zero": kl_div_zero[j],
                         "delta_gold_prob_zero": delta_gold_prob_zero[j],
+                        "signed_mean_rand": delta_sum_rand[j] / length,
+                        "abs_mean_rand": delta_abs_sum_rand[j] / length,
+                        "topk_rand": torch.cat(topk_rand[j], dim=0),
+                        "botk_rand": torch.cat(botk_rand[j], dim=0),
+                        "kl_div_rand": kl_div_rand[j],
+                        "delta_gold_prob_rand": delta_gold_prob_rand[j],
                     }
                     for j, dir_idx in enumerate(directions_to_ablate)
                 },
@@ -454,6 +517,7 @@ def run_ablation(
         anls_cat = [sum(nls) / length for nls in nls_ablated_cat]
         anls_global = [sum(nls) / length for nls in nls_ablated_global]
         anls_zero = [sum(nls) / length for nls in nls_ablated_zero]
+        anls_rand = [sum(nls) / length for nls in nls_ablated_rand]
 
         save_json(
             cat_dir / "anls_summary.json",
@@ -465,6 +529,7 @@ def run_ablation(
                 anls_ablated_per_category_mean=anls_cat,
                 anls_ablated_global_mean=anls_global,
                 anls_ablated_zero_mean=anls_zero,
+                anls_ablated_random=anls_rand,
             ),
         )
 
@@ -472,5 +537,6 @@ def run_ablation(
             f"\n{name}: orig={anls_orig:.4f}, "
             f"cat={[f'{a:.4f}' for a in anls_cat]}, "
             f"global={[f'{a:.4f}' for a in anls_global]}, "
-            f"zero={[f'{a:.4f}' for a in anls_zero]}"
+            f"zero={[f'{a:.4f}' for a in anls_zero]}, "
+            f"rand={[f'{a:.4f}' for a in anls_rand]}"
         )
