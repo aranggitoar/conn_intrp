@@ -161,6 +161,7 @@ def evaluate_masks_kl(
         batch = data[i : i + step]
         inputs = adapter.preprocess(batch, image_base_path)
         attention_mask = inputs["attention_mask"]
+        B = attention_mask.shape[0]
 
         with torch.no_grad():
             vision_out = adapter.extract_vision(inputs)
@@ -176,31 +177,46 @@ def evaluate_masks_kl(
                 if ln not in all_layer_names:
                     continue
 
-                for si in range(n_sets):
-                    if ln not in mask_sets[si]:
-                        continue
+                active = [
+                    si for si in range(n_sets) if ln in mask_sets[si]
+                ]
+                if not active:
+                    continue
+
+                all_embeds = []
+                for si in active:
                     mask = mask_sets[si][ln].to(device=layer.S.device)
                     S_masked = layer.S * mask
                     W_masked = layer.U @ torch.diag(S_masked) @ layer.Vt
                     conn_out_masked = adapter.run_connector_layer_masked(
                         vision_out, ln, W_masked
                     )
-
-                    with torch.autocast(
-                        device_type="cuda", dtype=adapter.compute_dtype
-                    ):
-                        embeds_masked = adapter.merge_embeds(
-                            inputs, text_embeds, conn_out_masked
-                        )
-                        logits_masked = adapter.get_logits(
-                            embeds_masked, attention_mask
-                        )
-                    p_masked = F.log_softmax(logits_masked.float(), dim=-1)
-
-                    kl = F.kl_div(
-                        p_masked, p_original.float(), reduction="batchmean"
+                    embeds_masked = adapter.merge_embeds(
+                        inputs, text_embeds, conn_out_masked
                     )
-                    kl_sums[si][ln] += kl.item()
+                    all_embeds.append(embeds_masked)
+
+                stacked_embeds = torch.cat(all_embeds, dim=0)
+                stacked_attn = attention_mask.repeat(len(active), 1)
+
+                with torch.autocast(
+                    device_type="cuda", dtype=adapter.compute_dtype
+                ):
+                    stacked_logits = adapter.get_logits(
+                        stacked_embeds, stacked_attn
+                    )
+                stacked_p = F.log_softmax(stacked_logits.float(), dim=-1)
+                p_orig_exp = p_original.float().repeat(len(active), 1)
+
+                kl_per_sample = F.kl_div(
+                    stacked_p, p_orig_exp, reduction="none"
+                ).sum(dim=-1)
+                kl_all = kl_per_sample.view(len(active), B).mean(dim=1)
+
+                for j, si in enumerate(active):
+                    kl_sums[si][ln] += kl_all[j].item()
+
+                del all_embeds, stacked_embeds, stacked_logits, stacked_p
 
         del vision_out
         torch.cuda.empty_cache()
