@@ -23,6 +23,7 @@ Example::
 
 Main Functions:
     run_dm: Train per-category directional masks across all categories.
+    evaluate_mask_kl: Measure KL divergence of a given mask without training.
 """
 
 import math
@@ -70,6 +71,88 @@ def _check_converged(
                 if abs(seq[i] - seq[i - 1]) > threshold:
                     return False
     return True
+
+
+def evaluate_mask_kl(
+    adapter: ModelAdapter,
+    data: list,
+    mask_weights: dict[str, torch.Tensor],
+    *,
+    step: int = 5,
+    image_base_path: Path,
+) -> dict[str, float]:
+    """
+    Measure average KL divergence for a given set of mask weights.
+
+    Runs one pass over *data* (no gradient, no training) and returns
+    the mean KL(masked || original) per layer.  Use to compare an
+    optimized mask against a random baseline.
+
+    :param adapter: Model adapter instance.
+    :type adapter: ModelAdapter
+    :param data: List of data dicts (single category).
+    :type data: list
+    :param mask_weights: ``{layer_name: mask_tensor}`` with values
+        in ``[0, 1]``, shape ``(n_dirs,)``.
+    :type mask_weights: dict[str, torch.Tensor]
+    :param step: Batch size.
+    :type step: int
+    :param image_base_path: Root directory for image files.
+    :type image_base_path: Path
+    :returns: ``{layer_name: mean_kl}``
+    :rtype: dict[str, float]
+    """
+    layers = adapter.svd_layers
+    length = len(data)
+
+    kl_sums = {ln: 0.0 for ln in mask_weights}
+    n_steps = 0
+
+    for i in tqdm(
+        range(0, length, step),
+        total=math.ceil(length / step),
+        desc="Evaluating mask KL",
+        leave=False,
+    ):
+        batch = data[i : i + step]
+        inputs = adapter.preprocess(batch, image_base_path)
+        attention_mask = inputs["attention_mask"]
+
+        with torch.no_grad():
+            vision_out = adapter.extract_vision(inputs)
+            conn_out_orig = adapter.run_connector(vision_out)
+            text_embeds = adapter.get_text_embeds(inputs)
+            embeds_orig = adapter.merge_embeds(inputs, text_embeds, conn_out_orig)
+            logits_orig = adapter.get_logits(embeds_orig, attention_mask)
+            p_original = F.softmax(logits_orig, dim=-1)
+            del conn_out_orig, embeds_orig
+
+            for layer in layers:
+                ln = layer.name
+                if ln not in mask_weights:
+                    continue
+                mask = mask_weights[ln].to(device=layer.S.device)
+                S_masked = layer.S * mask
+                W_masked = layer.U @ torch.diag(S_masked) @ layer.Vt
+                conn_out_masked = adapter.run_connector_layer_masked(
+                    vision_out, ln, W_masked
+                )
+
+                with torch.autocast(device_type="cuda", dtype=adapter.compute_dtype):
+                    embeds_masked = adapter.merge_embeds(
+                        inputs, text_embeds, conn_out_masked
+                    )
+                    logits_masked = adapter.get_logits(embeds_masked, attention_mask)
+                p_masked = F.log_softmax(logits_masked.float(), dim=-1)
+
+                kl = F.kl_div(p_masked, p_original.float(), reduction="batchmean")
+                kl_sums[ln] += kl.item()
+
+        del vision_out
+        torch.cuda.empty_cache()
+        n_steps += 1
+
+    return {ln: kl_sums[ln] / max(n_steps, 1) for ln in mask_weights}
 
 
 def run_dm(

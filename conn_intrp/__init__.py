@@ -11,7 +11,7 @@ from .ablation import compute_category_means, run_ablation
 from .cka import linear_cka
 from .config import DirectionalMaskingConfig
 from .data import HARNESS_PROMPT, best_anls, filter_categories, load_docvqa, relaxed_anls
-from .dm import run_dm
+from .dm import evaluate_mask_kl, run_dm
 from .dm_analysis import (
     compare_categories,
     direction_profile,
@@ -49,6 +49,7 @@ __all__ = [
     "save_checkpoint",
     "load_checkpoint",
     "run_dm",
+    "evaluate_mask_kl",
     "compute_category_means",
     "run_ablation",
     "run_spatial_probe",
