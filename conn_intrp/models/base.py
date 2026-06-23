@@ -191,6 +191,30 @@ class ModelAdapter:
         """
         raise NotImplementedError
 
+    def generate_with_logits(
+        self,
+        embeds: torch.Tensor,
+        attention_mask: torch.Tensor,
+        max_new_tokens: int = 50,
+    ) -> tuple[list[str], torch.Tensor]:
+        """
+        Generate text and return first-step logits in one pass.
+
+        Avoids the redundant forward pass that calling :meth:`generate`
+        and :meth:`get_logits` separately would incur.
+
+        :param embeds: Merged input embeddings.
+        :type embeds: torch.Tensor
+        :param attention_mask: Attention mask.
+        :type attention_mask: torch.Tensor
+        :param max_new_tokens: Maximum tokens to generate.
+        :type max_new_tokens: int
+        :returns: ``(predictions, logits)`` where logits has shape
+            ``(B, vocab_size)``.
+        :rtype: tuple[list[str], torch.Tensor]
+        """
+        raise NotImplementedError
+
     def get_logits(
         self,
         embeds: torch.Tensor,

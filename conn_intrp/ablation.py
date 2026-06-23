@@ -289,8 +289,9 @@ def run_ablation(
                 embeds_orig = adapter.merge_embeds(
                     inputs, text_embeds, conn_out_orig
                 )
-                preds_orig = adapter.generate(embeds_orig, attention_mask)
-                logits_orig = adapter.get_logits(embeds_orig, attention_mask)
+                preds_orig, logits_orig = adapter.generate_with_logits(
+                    embeds_orig, attention_mask
+                )
 
             for targets, pred in zip(targets_batch, preds_orig):
                 nls_original.append(best_anls(pred, targets))
@@ -333,8 +334,9 @@ def run_ablation(
                         adapter.merge_embeds(inputs, text_embeds, conn_rand),
                     ], dim=0)
 
-                    all_preds = adapter.generate(stacked_embeds, stacked_attn)
-                    all_logits = adapter.get_logits(stacked_embeds, stacked_attn)
+                    all_preds, all_logits = adapter.generate_with_logits(
+                        stacked_embeds, stacked_attn
+                    )
 
                 preds_cat = all_preds[:actual]
                 preds_global = all_preds[actual : 2 * actual]

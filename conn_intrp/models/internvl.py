@@ -440,6 +440,25 @@ class InternVLAdapter(ModelAdapter):
         )
         return self.processor.batch_decode(out, skip_special_tokens=True)
 
+    def generate_with_logits(
+        self,
+        embeds: torch.Tensor,
+        attention_mask: torch.Tensor,
+        max_new_tokens: int = 50,
+    ) -> tuple[list[str], torch.Tensor]:
+        gen_out = self.model.generate(
+            inputs_embeds=embeds,
+            attention_mask=attention_mask,
+            max_new_tokens=max_new_tokens,
+            do_sample=False,
+            output_scores=True,
+            return_dict_in_generate=True,
+        )
+        preds = self.processor.batch_decode(
+            gen_out.sequences, skip_special_tokens=True
+        )
+        return preds, gen_out.scores[0]
+
     def get_logits(
         self,
         embeds: torch.Tensor,
