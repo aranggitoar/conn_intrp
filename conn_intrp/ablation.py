@@ -284,10 +284,10 @@ def run_ablation(
             )
             text_embeds = adapter.get_text_embeds(inputs)
 
-            # --- Original (unablated) — once per batch ---
             with torch.no_grad():
+                conn_out_orig = adapter.reconstruct(batch_coeff)
                 embeds_orig = adapter.merge_embeds(
-                    inputs, text_embeds, adapter.reconstruct(batch_coeff)
+                    inputs, text_embeds, conn_out_orig
                 )
                 preds_orig = adapter.generate(embeds_orig, attention_mask)
                 logits_orig = adapter.get_logits(embeds_orig, attention_mask)
@@ -295,18 +295,22 @@ def run_ablation(
             for targets, pred in zip(targets_batch, preds_orig):
                 nls_original.append(best_anls(pred, targets))
 
-            # --- Per-direction ablation ---
+            probs_orig = F.softmax(logits_orig, dim=-1)
+            log_probs_orig = F.log_softmax(logits_orig, dim=-1)
+            gold_tok = [
+                adapter.processor.tokenizer(
+                    targets[0], add_special_tokens=False
+                )["input_ids"][-1]
+                for targets in targets_batch
+            ]
+            gold_idx = torch.tensor(gold_tok, device=logits_orig.device)
+            lp_orig = log_probs_orig[range(actual), gold_idx]
+            stacked_attn = attention_mask.repeat(4, 1)
+
             for j, dir_idx in enumerate(directions_to_ablate):
-                coeff_cat = batch_coeff.clone()
-                coeff_cat[..., dir_idx] = cat_a_star[dir_idx]
+                u_d = adapter.U[:, dir_idx].to(batch_coeff.dtype)
+                orig_d = batch_coeff[..., dir_idx]
 
-                coeff_global = batch_coeff.clone()
-                coeff_global[..., dir_idx] = global_a_star[dir_idx]
-
-                coeff_zero = batch_coeff.clone()
-                coeff_zero[..., dir_idx] = 0
-
-                coeff_rand = batch_coeff.clone()
                 rand_vals = (
                     cat_a_star[dir_idx]
                     + torch.randn(
@@ -315,79 +319,55 @@ def run_ablation(
                     ).to(device=batch_coeff.device, dtype=batch_coeff.dtype)
                     * cat_std[dir_idx].to(batch_coeff.device, batch_coeff.dtype)
                 )
-                coeff_rand[..., dir_idx] = rand_vals
 
                 with torch.no_grad():
-                    embeds_cat = adapter.merge_embeds(
-                        inputs, text_embeds, adapter.reconstruct(coeff_cat)
-                    )
-                    embeds_global = adapter.merge_embeds(
-                        inputs, text_embeds, adapter.reconstruct(coeff_global)
-                    )
-                    embeds_zero = adapter.merge_embeds(
-                        inputs, text_embeds, adapter.reconstruct(coeff_zero)
-                    )
-                    embeds_rand = adapter.merge_embeds(
-                        inputs, text_embeds, adapter.reconstruct(coeff_rand)
-                    )
+                    conn_cat = conn_out_orig + (cat_a_star[dir_idx] - orig_d).unsqueeze(-1) * u_d
+                    conn_global = conn_out_orig + (global_a_star[dir_idx] - orig_d).unsqueeze(-1) * u_d
+                    conn_zero = conn_out_orig + (-orig_d).unsqueeze(-1) * u_d
+                    conn_rand = conn_out_orig + (rand_vals - orig_d).unsqueeze(-1) * u_d
 
-                    preds_cat = adapter.generate(embeds_cat, attention_mask)
-                    preds_global = adapter.generate(embeds_global, attention_mask)
-                    preds_zero = adapter.generate(embeds_zero, attention_mask)
-                    preds_rand = adapter.generate(embeds_rand, attention_mask)
-                    logits_cat = adapter.get_logits(embeds_cat, attention_mask)
-                    logits_global = adapter.get_logits(embeds_global, attention_mask)
-                    logits_zero = adapter.get_logits(embeds_zero, attention_mask)
-                    logits_rand = adapter.get_logits(embeds_rand, attention_mask)
+                    stacked_embeds = torch.cat([
+                        adapter.merge_embeds(inputs, text_embeds, conn_cat),
+                        adapter.merge_embeds(inputs, text_embeds, conn_global),
+                        adapter.merge_embeds(inputs, text_embeds, conn_zero),
+                        adapter.merge_embeds(inputs, text_embeds, conn_rand),
+                    ], dim=0)
+
+                    all_preds = adapter.generate(stacked_embeds, stacked_attn)
+                    all_logits = adapter.get_logits(stacked_embeds, stacked_attn)
+
+                preds_cat = all_preds[:actual]
+                preds_global = all_preds[actual : 2 * actual]
+                preds_zero = all_preds[2 * actual : 3 * actual]
+                preds_rand = all_preds[3 * actual :]
+
+                logits_cat, logits_global, logits_zero, logits_rand = (
+                    all_logits.split(actual)
+                )
 
                 delta_cat = (logits_orig - logits_cat).float()
                 delta_global = (logits_orig - logits_global).float()
                 delta_zero = (logits_orig - logits_zero).float()
                 delta_rand = (logits_orig - logits_rand).float()
 
-                probs_orig = F.softmax(logits_orig, dim=-1)
-                probs_cat = F.softmax(logits_cat, dim=-1)
-                probs_global = F.softmax(logits_global, dim=-1)
-                probs_zero = F.softmax(logits_zero, dim=-1)
-                probs_rand = F.softmax(logits_rand, dim=-1)
-                log_probs_cat = F.log_softmax(logits_cat, dim=-1)
-                log_probs_global = F.log_softmax(logits_global, dim=-1)
-                log_probs_zero = F.log_softmax(logits_zero, dim=-1)
-                log_probs_rand = F.log_softmax(logits_rand, dim=-1)
+                all_log_probs = F.log_softmax(all_logits, dim=-1)
+                probs_orig_exp = probs_orig.repeat(4, 1)
+                kl_all = F.kl_div(
+                    all_log_probs, probs_orig_exp, reduction="none"
+                ).sum(-1)
+                kl_c, kl_g, kl_z, kl_r = kl_all.split(actual)
+                kl_div_cat[j].extend(kl_c.cpu().tolist())
+                kl_div_global[j].extend(kl_g.cpu().tolist())
+                kl_div_zero[j].extend(kl_z.cpu().tolist())
+                kl_div_rand[j].extend(kl_r.cpu().tolist())
 
-                kl_div_cat[j].extend(
-                    F.kl_div(log_probs_cat, probs_orig, reduction="none").sum(-1).cpu().tolist()
-                )
-                kl_div_global[j].extend(
-                    F.kl_div(log_probs_global, probs_orig, reduction="none").sum(-1).cpu().tolist()
-                )
-                kl_div_zero[j].extend(
-                    F.kl_div(log_probs_zero, probs_orig, reduction="none").sum(-1).cpu().tolist()
-                )
-                kl_div_rand[j].extend(
-                    F.kl_div(log_probs_rand, probs_orig, reduction="none").sum(-1).cpu().tolist()
-                )
-
-                gold_tok = [
-                    adapter.processor.tokenizer(
-                        targets[0],
-                        add_special_tokens=False,
-                    )[
-                        "input_ids"
-                    ][-1]
-                    for targets in targets_batch
-                ]
-                gold_idx = torch.tensor(gold_tok, device=logits_orig.device)
-                log_probs_orig = F.log_softmax(logits_orig, dim=-1)
-                lp_orig = log_probs_orig[range(actual), gold_idx]
-                lp_cat = log_probs_cat[range(actual), gold_idx]
-                lp_global = log_probs_global[range(actual), gold_idx]
-                lp_zero = log_probs_zero[range(actual), gold_idx]
-                lp_rand = log_probs_rand[range(actual), gold_idx]
-                delta_gold_prob_cat[j].extend((lp_orig - lp_cat).cpu().tolist())
-                delta_gold_prob_global[j].extend((lp_orig - lp_global).cpu().tolist())
-                delta_gold_prob_zero[j].extend((lp_orig - lp_zero).cpu().tolist())
-                delta_gold_prob_rand[j].extend((lp_orig - lp_rand).cpu().tolist())
+                gold_idx_exp = gold_idx.repeat(4)
+                all_lp = all_log_probs[range(4 * actual), gold_idx_exp]
+                lp_c, lp_g, lp_z, lp_r = all_lp.split(actual)
+                delta_gold_prob_cat[j].extend((lp_orig - lp_c).cpu().tolist())
+                delta_gold_prob_global[j].extend((lp_orig - lp_g).cpu().tolist())
+                delta_gold_prob_zero[j].extend((lp_orig - lp_z).cpu().tolist())
+                delta_gold_prob_rand[j].extend((lp_orig - lp_r).cpu().tolist())
 
                 delta_sum_cat[j] += delta_cat.sum(dim=0).cpu()
                 delta_abs_sum_cat[j] += delta_cat.abs().sum(dim=0).cpu()
@@ -397,6 +377,11 @@ def run_ablation(
                 delta_abs_sum_zero[j] += delta_zero.abs().sum(dim=0).cpu()
                 delta_sum_rand[j] += delta_rand.sum(dim=0).cpu()
                 delta_abs_sum_rand[j] += delta_rand.abs().sum(dim=0).cpu()
+
+                probs_cat = F.softmax(logits_cat, dim=-1)
+                probs_global = F.softmax(logits_global, dim=-1)
+                probs_zero = F.softmax(logits_zero, dim=-1)
+                probs_rand = F.softmax(logits_rand, dim=-1)
 
                 top_v, top_i = delta_cat.topk(K, dim=-1)
                 bot_v, bot_i = (-delta_cat).topk(K, dim=-1)
