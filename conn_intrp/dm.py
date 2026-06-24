@@ -116,6 +116,7 @@ def evaluate_masks_kl(
     mask_sets: list[dict[str, torch.Tensor]],
     *,
     step: int = 5,
+    mask_batch: int = 8,
     image_base_path: Path,
     desc: str = "Evaluating mask KL",
 ) -> list[dict[str, float]]:
@@ -123,8 +124,9 @@ def evaluate_masks_kl(
     Evaluate multiple mask sets in a single data pass.
 
     The expensive forward pass (vision encoder, original logits) is
-    computed once per batch; each mask set's KL is then evaluated with
-    only the cheap masked-connector forward.
+    computed once per batch.  Mask sets are then evaluated in chunks of
+    *mask_batch* — each chunk stacks its masked embeddings and runs one
+    batched decoder forward instead of one per mask.
 
     :param adapter: Model adapter instance.
     :type adapter: ModelAdapter
@@ -132,8 +134,11 @@ def evaluate_masks_kl(
     :type data: list
     :param mask_sets: List of ``{layer_name: mask_tensor}`` dicts.
     :type mask_sets: list[dict[str, torch.Tensor]]
-    :param step: Batch size.
+    :param step: Image batch size.
     :type step: int
+    :param mask_batch: Max mask sets per decoder forward.  Total
+        sequences per forward = ``step × mask_batch``.
+    :type mask_batch: int
     :param image_base_path: Root directory for image files.
     :type image_base_path: Path
     :param desc: Progress bar description.
@@ -183,40 +188,43 @@ def evaluate_masks_kl(
                 if not active:
                     continue
 
-                all_embeds = []
-                for si in active:
-                    mask = mask_sets[si][ln].to(device=layer.S.device)
-                    S_masked = layer.S * mask
-                    W_masked = layer.U @ torch.diag(S_masked) @ layer.Vt
-                    conn_out_masked = adapter.run_connector_layer_masked(
-                        vision_out, ln, W_masked
-                    )
-                    embeds_masked = adapter.merge_embeds(
-                        inputs, text_embeds, conn_out_masked
-                    )
-                    all_embeds.append(embeds_masked)
+                for chunk_start in range(0, len(active), mask_batch):
+                    chunk = active[chunk_start : chunk_start + mask_batch]
 
-                stacked_embeds = torch.cat(all_embeds, dim=0)
-                stacked_attn = attention_mask.repeat(len(active), 1)
+                    chunk_embeds = []
+                    for si in chunk:
+                        mask = mask_sets[si][ln].to(device=layer.S.device)
+                        S_masked = layer.S * mask
+                        W_masked = layer.U @ torch.diag(S_masked) @ layer.Vt
+                        conn_out_masked = adapter.run_connector_layer_masked(
+                            vision_out, ln, W_masked
+                        )
+                        embeds_masked = adapter.merge_embeds(
+                            inputs, text_embeds, conn_out_masked
+                        )
+                        chunk_embeds.append(embeds_masked)
 
-                with torch.autocast(
-                    device_type="cuda", dtype=adapter.compute_dtype
-                ):
-                    stacked_logits = adapter.get_logits(
-                        stacked_embeds, stacked_attn
-                    )
-                stacked_p = F.log_softmax(stacked_logits.float(), dim=-1)
-                p_orig_exp = p_original.float().repeat(len(active), 1)
+                    stacked_embeds = torch.cat(chunk_embeds, dim=0)
+                    stacked_attn = attention_mask.repeat(len(chunk), 1)
 
-                kl_per_sample = F.kl_div(
-                    stacked_p, p_orig_exp, reduction="none"
-                ).sum(dim=-1)
-                kl_all = kl_per_sample.view(len(active), B).mean(dim=1)
+                    with torch.autocast(
+                        device_type="cuda", dtype=adapter.compute_dtype
+                    ):
+                        stacked_logits = adapter.get_logits(
+                            stacked_embeds, stacked_attn
+                        )
+                    stacked_p = F.log_softmax(stacked_logits.float(), dim=-1)
+                    p_orig_exp = p_original.float().repeat(len(chunk), 1)
 
-                for j, si in enumerate(active):
-                    kl_sums[si][ln] += kl_all[j].item()
+                    kl_per_sample = F.kl_div(
+                        stacked_p, p_orig_exp, reduction="none"
+                    ).sum(dim=-1)
+                    kl_all = kl_per_sample.view(len(chunk), B).mean(dim=1)
 
-                del all_embeds, stacked_embeds, stacked_logits, stacked_p
+                    for j, si in enumerate(chunk):
+                        kl_sums[si][ln] += kl_all[j].item()
+
+                    del chunk_embeds, stacked_embeds, stacked_logits, stacked_p
 
         del vision_out
         torch.cuda.empty_cache()

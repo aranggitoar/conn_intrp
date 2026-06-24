@@ -652,12 +652,14 @@ def run_joint_ablation(
     *,
     direction_sets: dict[str, dict[str, dict[str, list[int]]]],
     batch_size: int,
+    K: int,
     image_base_path: Path,
     run_dir: Path,
     rand_seed: int = 42,
 ) -> None:
     """
-    Joint ablation of entire direction sets with ANLS scoring and KL extraction.
+    Joint ablation of entire direction sets with ANLS scoring and Δlogit
+    extraction.
 
     Ablates all directions in a set simultaneously (multi-rank correction)
     and measures the effect. Designed for comparing DM mask active sets
@@ -680,6 +682,8 @@ def run_joint_ablation(
     :type direction_sets: dict[str, dict[str, dict[str, list[int]]]]
     :param batch_size: Number of images per forward pass.
     :type batch_size: int
+    :param K: Number of top/bottom tokens to keep per image.
+    :type K: int
     :param image_base_path: Root directory for image files.
     :type image_base_path: Path
     :param run_dir: Output directory for this run.
@@ -739,6 +743,18 @@ def run_joint_ablation(
                     "nls_cat": [], "nls_global": [], "nls_zero": [], "nls_rand": [],
                     "kl_cat": [], "kl_global": [], "kl_zero": [], "kl_rand": [],
                     "dgp_cat": [], "dgp_global": [], "dgp_zero": [], "dgp_rand": [],
+                    "delta_sum_cat": torch.zeros(adapter.vocab_size),
+                    "delta_abs_sum_cat": torch.zeros(adapter.vocab_size),
+                    "delta_sum_global": torch.zeros(adapter.vocab_size),
+                    "delta_abs_sum_global": torch.zeros(adapter.vocab_size),
+                    "delta_sum_zero": torch.zeros(adapter.vocab_size),
+                    "delta_abs_sum_zero": torch.zeros(adapter.vocab_size),
+                    "delta_sum_rand": torch.zeros(adapter.vocab_size),
+                    "delta_abs_sum_rand": torch.zeros(adapter.vocab_size),
+                    "topk_cat": [], "botk_cat": [],
+                    "topk_global": [], "botk_global": [],
+                    "topk_zero": [], "botk_zero": [],
+                    "topk_rand": [], "botk_rand": [],
                 }
 
         rand_gen = torch.Generator().manual_seed(rand_seed)
@@ -899,6 +915,44 @@ def run_joint_ablation(
                         (lp_orig - lp_r).cpu().tolist()
                     )
 
+                    logits_cat, logits_global, logits_zero, logits_rand = (
+                        all_logits.split(actual)
+                    )
+                    delta_cat = (logits_orig - logits_cat).float()
+                    delta_global = (logits_orig - logits_global).float()
+                    delta_zero = (logits_orig - logits_zero).float()
+                    delta_rand = (logits_orig - logits_rand).float()
+
+                    r = set_results[sl][layer_name]
+                    r["delta_sum_cat"] += delta_cat.sum(dim=0).cpu()
+                    r["delta_abs_sum_cat"] += delta_cat.abs().sum(dim=0).cpu()
+                    r["delta_sum_global"] += delta_global.sum(dim=0).cpu()
+                    r["delta_abs_sum_global"] += delta_global.abs().sum(dim=0).cpu()
+                    r["delta_sum_zero"] += delta_zero.sum(dim=0).cpu()
+                    r["delta_abs_sum_zero"] += delta_zero.abs().sum(dim=0).cpu()
+                    r["delta_sum_rand"] += delta_rand.sum(dim=0).cpu()
+                    r["delta_abs_sum_rand"] += delta_rand.abs().sum(dim=0).cpu()
+
+                    probs_cat = F.softmax(logits_cat, dim=-1)
+                    probs_global = F.softmax(logits_global, dim=-1)
+                    probs_zero = F.softmax(logits_zero, dim=-1)
+                    probs_rand = F.softmax(logits_rand, dim=-1)
+
+                    for delta, probs_abl, tk_key, bk_key in [
+                        (delta_cat, probs_cat, "topk_cat", "botk_cat"),
+                        (delta_global, probs_global, "topk_global", "botk_global"),
+                        (delta_zero, probs_zero, "topk_zero", "botk_zero"),
+                        (delta_rand, probs_rand, "topk_rand", "botk_rand"),
+                    ]:
+                        top_v, top_i = delta.topk(K, dim=-1)
+                        bot_v, bot_i = (-delta).topk(K, dim=-1)
+                        top_p_orig = probs_orig.gather(-1, top_i.long())
+                        bot_p_orig = probs_orig.gather(-1, bot_i.long())
+                        top_p_abl = probs_abl.gather(-1, top_i.long())
+                        bot_p_abl = probs_abl.gather(-1, bot_i.long())
+                        r[tk_key].append(torch.stack([top_i, top_v, top_p_orig, top_p_abl], dim=1).cpu())
+                        r[bk_key].append(torch.stack([bot_i, bot_v, bot_p_orig, bot_p_abl], dim=1).cpu())
+
         cat_dir = run_dir / fs_safe(name)
         cat_dir.mkdir(parents=True, exist_ok=True)
 
@@ -931,6 +985,30 @@ def run_joint_ablation(
                 }
 
         save_json(cat_dir / "joint_anls_summary.json", summary)
+
+        delta_logits = {}
+        for sl in set_labels:
+            delta_logits[sl] = {}
+            for ln, res in set_results[sl].items():
+                delta_logits[sl][ln] = {
+                    "signed_mean_cat": res["delta_sum_cat"] / length,
+                    "abs_mean_cat": res["delta_abs_sum_cat"] / length,
+                    "signed_mean_global": res["delta_sum_global"] / length,
+                    "abs_mean_global": res["delta_abs_sum_global"] / length,
+                    "signed_mean_zero": res["delta_sum_zero"] / length,
+                    "abs_mean_zero": res["delta_abs_sum_zero"] / length,
+                    "signed_mean_rand": res["delta_sum_rand"] / length,
+                    "abs_mean_rand": res["delta_abs_sum_rand"] / length,
+                    "topk_cat": torch.cat(res["topk_cat"], dim=0) if res["topk_cat"] else torch.empty(0),
+                    "botk_cat": torch.cat(res["botk_cat"], dim=0) if res["botk_cat"] else torch.empty(0),
+                    "topk_global": torch.cat(res["topk_global"], dim=0) if res["topk_global"] else torch.empty(0),
+                    "botk_global": torch.cat(res["botk_global"], dim=0) if res["botk_global"] else torch.empty(0),
+                    "topk_zero": torch.cat(res["topk_zero"], dim=0) if res["topk_zero"] else torch.empty(0),
+                    "botk_zero": torch.cat(res["botk_zero"], dim=0) if res["botk_zero"] else torch.empty(0),
+                    "topk_rand": torch.cat(res["topk_rand"], dim=0) if res["topk_rand"] else torch.empty(0),
+                    "botk_rand": torch.cat(res["botk_rand"], dim=0) if res["botk_rand"] else torch.empty(0),
+                }
+        torch.save(delta_logits, cat_dir / "joint_delta_logits.pt")
 
         print(f"\n{name}: orig={anls_orig:.4f}")
         for sl in set_labels:
