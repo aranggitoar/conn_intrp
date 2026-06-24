@@ -343,9 +343,7 @@ class ModelAdapter:
         """
         raise NotImplementedError
 
-    def forward_connector_from(
-        self, layer_name: str, layer_output: torch.Tensor
-    ) -> torch.Tensor:
+    def forward_connector_from(self, layer_name: str, layer_output: torch.Tensor) -> torch.Tensor:
         """
         Run the connector from *layer_name*'s output to the final output.
 

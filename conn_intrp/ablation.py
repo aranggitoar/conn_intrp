@@ -49,9 +49,7 @@ from .output import (
 )
 
 
-def _load_ckpt_compat(
-    ckpt: dict, component_name: str
-) -> tuple[
+def _load_ckpt_compat(ckpt: dict, component_name: str) -> tuple[
     dict[str, torch.Tensor] | None,
     dict[str, torch.Tensor],
     dict[str, torch.Tensor] | None,
@@ -86,8 +84,7 @@ def load_all_coefficients(
     :rtype: dict[str, dict[str, torch.Tensor]]
     """
     return {
-        name: load_category_coefficients(run_dir, name, component_name)
-        for name in category_names
+        name: load_category_coefficients(run_dir, name, component_name) for name in category_names
     }
 
 
@@ -110,9 +107,7 @@ def load_category_coefficients(
     """
     ckpt = load_checkpoint(run_dir, category_name)
     if ckpt is None:
-        raise FileNotFoundError(
-            f'No checkpoint for "{category_name}" in {run_dir}'
-        )
+        raise FileNotFoundError(f'No checkpoint for "{category_name}" in {run_dir}')
     raw_coeff, _, _ = _load_ckpt_compat(ckpt, component_name)
     if raw_coeff is None:
         raise ValueError(
@@ -171,9 +166,7 @@ def compute_category_means(
 
     per_category_a_star: dict[str, dict[str, torch.Tensor]] = {}
 
-    global_mean_sum = {
-        l.name: torch.zeros(l.n_dirs, dtype=torch.float32) for l in layers
-    }
+    global_mean_sum = {l.name: torch.zeros(l.n_dirs, dtype=torch.float32) for l in layers}
     n_unique_images = 0
     seen_images: set[str] = set()
 
@@ -181,9 +174,7 @@ def compute_category_means(
         if fs_safe(name) in completed:
             ckpt = load_checkpoint(run_dir, name)
             if ckpt is not None and "a_star" in ckpt:
-                raw_coeff, raw_astar, raw_contrib = _load_ckpt_compat(
-                    ckpt, adapter.component_name
-                )
+                raw_coeff, raw_astar, raw_contrib = _load_ckpt_compat(ckpt, adapter.component_name)
                 missing = set(layer_names) - set(raw_astar.keys())
                 if not missing:
                     per_category_a_star[name] = {
@@ -199,10 +190,7 @@ def compute_category_means(
                     n_unique_images += ckpt.get("n_new_images", 0)
                     print(f'  Loaded checkpoint for "{name}"')
                     continue
-                print(
-                    f'  Checkpoint for "{name}" missing layers {missing}'
-                    f" — computing"
-                )
+                print(f'  Checkpoint for "{name}" missing layers {missing}' f" — computing")
                 new_image_set = set(ckpt.get("new_image_ids", []))
                 for img_id in new_image_set:
                     seen_images.add(img_id)
@@ -214,12 +202,10 @@ def compute_category_means(
 
                 missing_svd = [l for l in layers if l.name in missing]
                 cat_coeff_new = {
-                    l.name: torch.empty(len(data), adapter.n_patches, l.n_dirs)
-                    for l in missing_svd
+                    l.name: torch.empty(len(data), adapter.n_patches, l.n_dirs) for l in missing_svd
                 }
                 cat_contrib_new = {
-                    l.name: torch.zeros(l.n_dirs, dtype=torch.float32)
-                    for l in missing_svd
+                    l.name: torch.zeros(l.n_dirs, dtype=torch.float32) for l in missing_svd
                 }
 
                 for i in tqdm(
@@ -236,9 +222,7 @@ def compute_category_means(
                     for j, datum in enumerate(batch):
                         if datum["image"] in new_image_set:
                             for ln in missing:
-                                cat_contrib_new[ln] += (
-                                    coefficients[ln][j].mean(dim=0).cpu().float()
-                                )
+                                cat_contrib_new[ln] += coefficients[ln][j].mean(dim=0).cpu().float()
 
                 merged_astar = dict(raw_astar)
                 merged_contrib = dict(raw_contrib) if raw_contrib else {}
@@ -248,9 +232,7 @@ def compute_category_means(
                     global_mean_sum[ln] += cat_contrib_new[ln]
 
                 per_category_a_star[name] = {
-                    ln: merged_astar[ln].to(
-                        dtype=adapter.compute_dtype, device="cuda"
-                    )
+                    ln: merged_astar[ln].to(dtype=adapter.compute_dtype, device="cuda")
                     for ln in layer_names
                 }
                 ckpt_data = {
@@ -268,12 +250,9 @@ def compute_category_means(
 
         length = len(data)
         cat_coefficients = {
-            l.name: torch.empty(length, adapter.n_patches, l.n_dirs)
-            for l in layers
+            l.name: torch.empty(length, adapter.n_patches, l.n_dirs) for l in layers
         }
-        cat_global_contrib = {
-            l.name: torch.zeros(l.n_dirs, dtype=torch.float32) for l in layers
-        }
+        cat_global_contrib = {l.name: torch.zeros(l.n_dirs, dtype=torch.float32) for l in layers}
         cat_new_images: list[str] = []
 
         for i in tqdm(
@@ -295,14 +274,10 @@ def compute_category_means(
                     seen_images.add(img_id)
                     cat_new_images.append(img_id)
                     for ln in layer_names:
-                        cat_global_contrib[ln] += (
-                            coefficients[ln][j].mean(dim=0).cpu().float()
-                        )
+                        cat_global_contrib[ln] += coefficients[ln][j].mean(dim=0).cpu().float()
 
         cat_a_star = {
-            ln: cat_coefficients[ln].mean(dim=(0, 1)).to(
-                dtype=adapter.compute_dtype, device="cuda"
-            )
+            ln: cat_coefficients[ln].mean(dim=(0, 1)).to(dtype=adapter.compute_dtype, device="cuda")
             for ln in layer_names
         }
         per_category_a_star[name] = cat_a_star
@@ -321,9 +296,7 @@ def compute_category_means(
         save_checkpoint(run_dir, name, ckpt_data)
 
     global_a_star = {
-        ln: (global_mean_sum[ln] / n_unique_images).to(
-            dtype=adapter.compute_dtype, device="cuda"
-        )
+        ln: (global_mean_sum[ln] / n_unique_images).to(dtype=adapter.compute_dtype, device="cuda")
         for ln in layer_names
     }
 
@@ -388,11 +361,7 @@ def run_ablation(
     """
     svd_layer_map = {l.name: l for l in adapter.svd_layers}
 
-    tasks = [
-        (ln, j, d)
-        for ln, dirs in directions_to_ablate.items()
-        for j, d in enumerate(dirs)
-    ]
+    tasks = [(ln, j, d) for ln, dirs in directions_to_ablate.items() for j, d in enumerate(dirs)]
     n_tasks = len(tasks)
 
     update_metadata(
@@ -426,10 +395,7 @@ def run_ablation(
         cat_coefficients = load_category_coefficients(
             coefficients_dir, name, adapter.component_name
         )
-        cat_std = {
-            ln: cat_coefficients[ln].float().std(dim=(0, 1))
-            for ln in directions_to_ablate
-        }
+        cat_std = {ln: cat_coefficients[ln].float().std(dim=(0, 1)) for ln in directions_to_ablate}
         rand_gen = torch.Generator().manual_seed(rand_seed)
 
         nls_ablated_cat = [[] for _ in range(n_tasks)]
@@ -484,9 +450,9 @@ def run_ablation(
             for layer in adapter.svd_layers:
                 if layer.name not in directions_to_ablate:
                     continue
-                coeff = cat_coefficients[layer.name][
-                    i : i + actual
-                ].to(dtype=adapter.compute_dtype, device="cuda")
+                coeff = cat_coefficients[layer.name][i : i + actual].to(
+                    dtype=adapter.compute_dtype, device="cuda"
+                )
                 batch_coeffs[layer.name] = coeff
                 out = coeff @ layer.U.T.to(coeff.dtype)
                 if layer.bias is not None:
@@ -498,18 +464,12 @@ def run_ablation(
                 if last_layer.name in layer_outputs:
                     conn_out_orig = layer_outputs[last_layer.name]
                 else:
-                    last_coeff = cat_coefficients[
-                        last_layer.name
-                    ][i : i + actual].to(
+                    last_coeff = cat_coefficients[last_layer.name][i : i + actual].to(
                         dtype=adapter.compute_dtype, device="cuda"
                     )
                     conn_out_orig = adapter.reconstruct(last_coeff)
-                embeds_orig = adapter.merge_embeds(
-                    inputs, text_embeds, conn_out_orig
-                )
-                preds_orig, logits_orig = adapter.generate_with_logits(
-                    embeds_orig, attention_mask
-                )
+                embeds_orig = adapter.merge_embeds(inputs, text_embeds, conn_out_orig)
+                preds_orig, logits_orig = adapter.generate_with_logits(embeds_orig, attention_mask)
 
             for targets, pred in zip(targets_batch, preds_orig):
                 nls_original.append(best_anls(pred, targets))
@@ -517,9 +477,7 @@ def run_ablation(
             probs_orig = F.softmax(logits_orig, dim=-1)
             log_probs_orig = F.log_softmax(logits_orig, dim=-1)
             gold_tok = [
-                adapter.processor.tokenizer(
-                    targets[0], add_special_tokens=False
-                )["input_ids"][-1]
+                adapter.processor.tokenizer(targets[0], add_special_tokens=False)["input_ids"][-1]
                 for targets in targets_batch
             ]
             gold_idx = torch.tensor(gold_tok, device=logits_orig.device)
@@ -532,37 +490,38 @@ def run_ablation(
                 orig_d = batch_coeffs[layer_name][..., dir_idx]
                 l_out = layer_outputs[layer_name]
 
-                rand_vals = (
-                    cat_a_star[layer_name][dir_idx]
-                    + torch.randn(
-                        *batch_coeffs[layer_name].shape[:-1],
-                        generator=rand_gen,
-                    ).to(
-                        device=batch_coeffs[layer_name].device,
-                        dtype=batch_coeffs[layer_name].dtype,
-                    )
-                    * cat_std[layer_name][dir_idx].to(
-                        batch_coeffs[layer_name].device,
-                        batch_coeffs[layer_name].dtype,
-                    )
+                rand_vals = cat_a_star[layer_name][dir_idx] + torch.randn(
+                    *batch_coeffs[layer_name].shape[:-1],
+                    generator=rand_gen,
+                ).to(
+                    device=batch_coeffs[layer_name].device,
+                    dtype=batch_coeffs[layer_name].dtype,
+                ) * cat_std[
+                    layer_name
+                ][
+                    dir_idx
+                ].to(
+                    batch_coeffs[layer_name].device,
+                    batch_coeffs[layer_name].dtype,
                 )
 
                 with torch.no_grad():
-                    stacked_l = torch.cat([
-                        l_out + (cat_a_star[layer_name][dir_idx] - orig_d).unsqueeze(-1) * u_d,
-                        l_out + (global_a_star[layer_name][dir_idx] - orig_d).unsqueeze(-1) * u_d,
-                        l_out + (-orig_d).unsqueeze(-1) * u_d,
-                        l_out + (rand_vals - orig_d).unsqueeze(-1) * u_d,
-                    ], dim=0)
-                    stacked_conn = adapter.forward_connector_from(
-                        layer_name, stacked_l
+                    stacked_l = torch.cat(
+                        [
+                            l_out + (cat_a_star[layer_name][dir_idx] - orig_d).unsqueeze(-1) * u_d,
+                            l_out
+                            + (global_a_star[layer_name][dir_idx] - orig_d).unsqueeze(-1) * u_d,
+                            l_out + (-orig_d).unsqueeze(-1) * u_d,
+                            l_out + (rand_vals - orig_d).unsqueeze(-1) * u_d,
+                        ],
+                        dim=0,
                     )
+                    stacked_conn = adapter.forward_connector_from(layer_name, stacked_l)
                     conn_parts = stacked_conn.split(actual)
 
-                    stacked_embeds = torch.cat([
-                        adapter.merge_embeds(inputs, text_embeds, c)
-                        for c in conn_parts
-                    ], dim=0)
+                    stacked_embeds = torch.cat(
+                        [adapter.merge_embeds(inputs, text_embeds, c) for c in conn_parts], dim=0
+                    )
 
                     all_preds, all_logits = adapter.generate_with_logits(
                         stacked_embeds, stacked_attn
@@ -573,9 +532,7 @@ def run_ablation(
                 preds_zero = all_preds[2 * actual : 3 * actual]
                 preds_rand = all_preds[3 * actual :]
 
-                logits_cat, logits_global, logits_zero, logits_rand = (
-                    all_logits.split(actual)
-                )
+                logits_cat, logits_global, logits_zero, logits_rand = all_logits.split(actual)
 
                 delta_cat = (logits_orig - logits_cat).float()
                 delta_global = (logits_orig - logits_global).float()
@@ -584,9 +541,7 @@ def run_ablation(
 
                 all_log_probs = F.log_softmax(all_logits, dim=-1)
                 probs_orig_exp = probs_orig.repeat(4, 1)
-                kl_all = F.kl_div(
-                    all_log_probs, probs_orig_exp, reduction="none"
-                ).sum(-1)
+                kl_all = F.kl_div(all_log_probs, probs_orig_exp, reduction="none").sum(-1)
                 kl_c, kl_g, kl_z, kl_r = kl_all.split(actual)
                 kl_div_cat[t_idx].extend(kl_c.cpu().tolist())
                 kl_div_global[t_idx].extend(kl_g.cpu().tolist())
@@ -621,8 +576,12 @@ def run_ablation(
                 bot_p_orig = probs_orig.gather(-1, bot_i.long())
                 top_p_cat = probs_cat.gather(-1, top_i.long())
                 bot_p_cat = probs_cat.gather(-1, bot_i.long())
-                topk_cat[t_idx].append(torch.stack([top_i, top_v, top_p_orig, top_p_cat], dim=1).cpu())
-                botk_cat[t_idx].append(torch.stack([bot_i, bot_v, bot_p_orig, bot_p_cat], dim=1).cpu())
+                topk_cat[t_idx].append(
+                    torch.stack([top_i, top_v, top_p_orig, top_p_cat], dim=1).cpu()
+                )
+                botk_cat[t_idx].append(
+                    torch.stack([bot_i, bot_v, bot_p_orig, bot_p_cat], dim=1).cpu()
+                )
 
                 top_v, top_i = delta_global.topk(K, dim=-1)
                 bot_v, bot_i = (-delta_global).topk(K, dim=-1)
@@ -630,8 +589,12 @@ def run_ablation(
                 bot_p_orig = probs_orig.gather(-1, bot_i.long())
                 top_p_global = probs_global.gather(-1, top_i.long())
                 bot_p_global = probs_global.gather(-1, bot_i.long())
-                topk_global[t_idx].append(torch.stack([top_i, top_v, top_p_orig, top_p_global], dim=1).cpu())
-                botk_global[t_idx].append(torch.stack([bot_i, bot_v, bot_p_orig, bot_p_global], dim=1).cpu())
+                topk_global[t_idx].append(
+                    torch.stack([top_i, top_v, top_p_orig, top_p_global], dim=1).cpu()
+                )
+                botk_global[t_idx].append(
+                    torch.stack([bot_i, bot_v, bot_p_orig, bot_p_global], dim=1).cpu()
+                )
 
                 top_v, top_i = delta_zero.topk(K, dim=-1)
                 bot_v, bot_i = (-delta_zero).topk(K, dim=-1)
@@ -639,8 +602,12 @@ def run_ablation(
                 bot_p_orig = probs_orig.gather(-1, bot_i.long())
                 top_p_zero = probs_zero.gather(-1, top_i.long())
                 bot_p_zero = probs_zero.gather(-1, bot_i.long())
-                topk_zero[t_idx].append(torch.stack([top_i, top_v, top_p_orig, top_p_zero], dim=1).cpu())
-                botk_zero[t_idx].append(torch.stack([bot_i, bot_v, bot_p_orig, bot_p_zero], dim=1).cpu())
+                topk_zero[t_idx].append(
+                    torch.stack([top_i, top_v, top_p_orig, top_p_zero], dim=1).cpu()
+                )
+                botk_zero[t_idx].append(
+                    torch.stack([bot_i, bot_v, bot_p_orig, bot_p_zero], dim=1).cpu()
+                )
 
                 top_v, top_i = delta_rand.topk(K, dim=-1)
                 bot_v, bot_i = (-delta_rand).topk(K, dim=-1)
@@ -648,8 +615,12 @@ def run_ablation(
                 bot_p_orig = probs_orig.gather(-1, bot_i.long())
                 top_p_rand = probs_rand.gather(-1, top_i.long())
                 bot_p_rand = probs_rand.gather(-1, bot_i.long())
-                topk_rand[t_idx].append(torch.stack([top_i, top_v, top_p_orig, top_p_rand], dim=1).cpu())
-                botk_rand[t_idx].append(torch.stack([bot_i, bot_v, bot_p_orig, bot_p_rand], dim=1).cpu())
+                topk_rand[t_idx].append(
+                    torch.stack([top_i, top_v, top_p_orig, top_p_rand], dim=1).cpu()
+                )
+                botk_rand[t_idx].append(
+                    torch.stack([bot_i, bot_v, bot_p_orig, bot_p_rand], dim=1).cpu()
+                )
 
                 for targets, pred in zip(targets_batch, preds_cat):
                     nls_ablated_cat[t_idx].append(best_anls(pred, targets))
@@ -672,7 +643,11 @@ def run_ablation(
             if ln not in layer_delta:
                 layer_delta[ln] = {}
                 layer_nls[ln] = {
-                    "dirs": [], "cat": [], "global": [], "zero": [], "rand": [],
+                    "dirs": [],
+                    "cat": [],
+                    "global": [],
+                    "zero": [],
+                    "rand": [],
                 }
             layer_delta[ln][dir_idx] = {
                 "signed_mean_cat": delta_sum_cat[t_idx] / length,
@@ -708,22 +683,34 @@ def run_ablation(
 
         np.save(
             cat_dir / "nls_ablated_cat.npy",
-            {ln: [nls_ablated_cat[t] for t, (l, _, _) in enumerate(tasks) if l == ln] for ln in layer_nls},
+            {
+                ln: [nls_ablated_cat[t] for t, (l, _, _) in enumerate(tasks) if l == ln]
+                for ln in layer_nls
+            },
             allow_pickle=True,
         )
         np.save(
             cat_dir / "nls_ablated_global.npy",
-            {ln: [nls_ablated_global[t] for t, (l, _, _) in enumerate(tasks) if l == ln] for ln in layer_nls},
+            {
+                ln: [nls_ablated_global[t] for t, (l, _, _) in enumerate(tasks) if l == ln]
+                for ln in layer_nls
+            },
             allow_pickle=True,
         )
         np.save(
             cat_dir / "nls_ablated_zero.npy",
-            {ln: [nls_ablated_zero[t] for t, (l, _, _) in enumerate(tasks) if l == ln] for ln in layer_nls},
+            {
+                ln: [nls_ablated_zero[t] for t, (l, _, _) in enumerate(tasks) if l == ln]
+                for ln in layer_nls
+            },
             allow_pickle=True,
         )
         np.save(
             cat_dir / "nls_ablated_rand.npy",
-            {ln: [nls_ablated_rand[t] for t, (l, _, _) in enumerate(tasks) if l == ln] for ln in layer_nls},
+            {
+                ln: [nls_ablated_rand[t] for t, (l, _, _) in enumerate(tasks) if l == ln]
+                for ln in layer_nls
+            },
             allow_pickle=True,
         )
 
@@ -753,18 +740,10 @@ def run_ablation(
                 n_samples=length,
                 directions={ln: layer_nls[ln]["dirs"] for ln in layer_nls},
                 anls_original=anls_orig,
-                anls_ablated_per_category_mean={
-                    ln: layer_nls[ln]["cat"] for ln in layer_nls
-                },
-                anls_ablated_global_mean={
-                    ln: layer_nls[ln]["global"] for ln in layer_nls
-                },
-                anls_ablated_zero_mean={
-                    ln: layer_nls[ln]["zero"] for ln in layer_nls
-                },
-                anls_ablated_random={
-                    ln: layer_nls[ln]["rand"] for ln in layer_nls
-                },
+                anls_ablated_per_category_mean={ln: layer_nls[ln]["cat"] for ln in layer_nls},
+                anls_ablated_global_mean={ln: layer_nls[ln]["global"] for ln in layer_nls},
+                anls_ablated_zero_mean={ln: layer_nls[ln]["zero"] for ln in layer_nls},
+                anls_ablated_random={ln: layer_nls[ln]["rand"] for ln in layer_nls},
             ),
         )
 
@@ -866,10 +845,7 @@ def run_joint_ablation(
         cat_coefficients = load_category_coefficients(
             coefficients_dir, name, adapter.component_name
         )
-        cat_std = {
-            ln: cat_coefficients[ln].float().std(dim=(0, 1))
-            for ln in cat_coefficients
-        }
+        cat_std = {ln: cat_coefficients[ln].float().std(dim=(0, 1)) for ln in cat_coefficients}
 
         nls_original = []
         set_results: dict[str, dict[str, dict]] = {}
@@ -878,9 +854,18 @@ def run_joint_ablation(
             cat_layers = direction_sets[sl].get(name, {})
             for ln in cat_layers:
                 set_results[sl][ln] = {
-                    "nls_cat": [], "nls_global": [], "nls_zero": [], "nls_rand": [],
-                    "kl_cat": [], "kl_global": [], "kl_zero": [], "kl_rand": [],
-                    "dgp_cat": [], "dgp_global": [], "dgp_zero": [], "dgp_rand": [],
+                    "nls_cat": [],
+                    "nls_global": [],
+                    "nls_zero": [],
+                    "nls_rand": [],
+                    "kl_cat": [],
+                    "kl_global": [],
+                    "kl_zero": [],
+                    "kl_rand": [],
+                    "dgp_cat": [],
+                    "dgp_global": [],
+                    "dgp_zero": [],
+                    "dgp_rand": [],
                     "delta_sum_cat": torch.zeros(adapter.vocab_size),
                     "delta_abs_sum_cat": torch.zeros(adapter.vocab_size),
                     "delta_sum_global": torch.zeros(adapter.vocab_size),
@@ -889,10 +874,14 @@ def run_joint_ablation(
                     "delta_abs_sum_zero": torch.zeros(adapter.vocab_size),
                     "delta_sum_rand": torch.zeros(adapter.vocab_size),
                     "delta_abs_sum_rand": torch.zeros(adapter.vocab_size),
-                    "topk_cat": [], "botk_cat": [],
-                    "topk_global": [], "botk_global": [],
-                    "topk_zero": [], "botk_zero": [],
-                    "topk_rand": [], "botk_rand": [],
+                    "topk_cat": [],
+                    "botk_cat": [],
+                    "topk_global": [],
+                    "botk_global": [],
+                    "topk_zero": [],
+                    "botk_zero": [],
+                    "topk_rand": [],
+                    "botk_rand": [],
                 }
 
         rand_gen = torch.Generator().manual_seed(rand_seed)
@@ -913,9 +902,9 @@ def run_joint_ablation(
             batch_coeffs = {}
             layer_outputs = {}
             for layer in adapter.svd_layers:
-                coeff = cat_coefficients[layer.name][
-                    i : i + actual
-                ].to(dtype=adapter.compute_dtype, device="cuda")
+                coeff = cat_coefficients[layer.name][i : i + actual].to(
+                    dtype=adapter.compute_dtype, device="cuda"
+                )
                 batch_coeffs[layer.name] = coeff
                 out = coeff @ layer.U.T.to(coeff.dtype)
                 if layer.bias is not None:
@@ -925,12 +914,8 @@ def run_joint_ablation(
             with torch.no_grad():
                 last_layer = adapter.svd_layers[-1]
                 conn_out_orig = layer_outputs[last_layer.name]
-                embeds_orig = adapter.merge_embeds(
-                    inputs, text_embeds, conn_out_orig
-                )
-                preds_orig, logits_orig = adapter.generate_with_logits(
-                    embeds_orig, attention_mask
-                )
+                embeds_orig = adapter.merge_embeds(inputs, text_embeds, conn_out_orig)
+                preds_orig, logits_orig = adapter.generate_with_logits(embeds_orig, attention_mask)
 
             for targets, pred in zip(targets_batch, preds_orig):
                 nls_original.append(best_anls(pred, targets))
@@ -938,9 +923,7 @@ def run_joint_ablation(
             probs_orig = F.softmax(logits_orig, dim=-1)
             log_probs_orig = F.log_softmax(logits_orig, dim=-1)
             gold_tok = [
-                adapter.processor.tokenizer(
-                    targets[0], add_special_tokens=False
-                )["input_ids"][-1]
+                adapter.processor.tokenizer(targets[0], add_special_tokens=False)["input_ids"][-1]
                 for targets in targets_batch
             ]
             gold_idx = torch.tensor(gold_tok, device=logits_orig.device)
@@ -962,12 +945,15 @@ def run_joint_ablation(
                     cat_sub = cat_a_star[layer_name][dir_list]
                     global_sub = global_a_star[layer_name][dir_list]
 
-                    std_sub = cat_std[layer_name][dir_list].to(
-                        coeff.device, coeff.dtype
+                    std_sub = cat_std[layer_name][dir_list].to(coeff.device, coeff.dtype)
+                    rand_sub = (
+                        cat_sub
+                        + torch.randn(
+                            *orig_sub.shape,
+                            generator=rand_gen,
+                        ).to(device=coeff.device, dtype=coeff.dtype)
+                        * std_sub
                     )
-                    rand_sub = cat_sub + torch.randn(
-                        *orig_sub.shape, generator=rand_gen,
-                    ).to(device=coeff.device, dtype=coeff.dtype) * std_sub
 
                     with torch.no_grad():
                         delta_cat = (cat_sub - orig_sub) @ U_sub.T
@@ -975,22 +961,23 @@ def run_joint_ablation(
                         delta_zero = (-orig_sub) @ U_sub.T
                         delta_rand = (rand_sub - orig_sub) @ U_sub.T
 
-                        stacked_l = torch.cat([
-                            l_out + delta_cat,
-                            l_out + delta_global,
-                            l_out + delta_zero,
-                            l_out + delta_rand,
-                        ], dim=0)
-
-                        stacked_conn = adapter.forward_connector_from(
-                            layer_name, stacked_l
+                        stacked_l = torch.cat(
+                            [
+                                l_out + delta_cat,
+                                l_out + delta_global,
+                                l_out + delta_zero,
+                                l_out + delta_rand,
+                            ],
+                            dim=0,
                         )
+
+                        stacked_conn = adapter.forward_connector_from(layer_name, stacked_l)
                         conn_parts = stacked_conn.split(actual)
 
-                        stacked_embeds = torch.cat([
-                            adapter.merge_embeds(inputs, text_embeds, c)
-                            for c in conn_parts
-                        ], dim=0)
+                        stacked_embeds = torch.cat(
+                            [adapter.merge_embeds(inputs, text_embeds, c) for c in conn_parts],
+                            dim=0,
+                        )
 
                         all_preds, all_logits = adapter.generate_with_logits(
                             stacked_embeds, stacked_attn
@@ -1002,60 +989,34 @@ def run_joint_ablation(
                     preds_rand = all_preds[3 * actual :]
 
                     for targets, pred in zip(targets_batch, preds_cat):
-                        set_results[sl][layer_name]["nls_cat"].append(
-                            best_anls(pred, targets)
-                        )
+                        set_results[sl][layer_name]["nls_cat"].append(best_anls(pred, targets))
                     for targets, pred in zip(targets_batch, preds_global):
-                        set_results[sl][layer_name]["nls_global"].append(
-                            best_anls(pred, targets)
-                        )
+                        set_results[sl][layer_name]["nls_global"].append(best_anls(pred, targets))
                     for targets, pred in zip(targets_batch, preds_zero):
-                        set_results[sl][layer_name]["nls_zero"].append(
-                            best_anls(pred, targets)
-                        )
+                        set_results[sl][layer_name]["nls_zero"].append(best_anls(pred, targets))
                     for targets, pred in zip(targets_batch, preds_rand):
-                        set_results[sl][layer_name]["nls_rand"].append(
-                            best_anls(pred, targets)
-                        )
+                        set_results[sl][layer_name]["nls_rand"].append(best_anls(pred, targets))
 
                     all_log_probs = F.log_softmax(all_logits, dim=-1)
                     probs_orig_exp = probs_orig.repeat(4, 1)
-                    kl_all = F.kl_div(
-                        all_log_probs, probs_orig_exp, reduction="none"
-                    ).sum(-1)
+                    kl_all = F.kl_div(all_log_probs, probs_orig_exp, reduction="none").sum(-1)
                     kl_c, kl_g, kl_z, kl_r = kl_all.split(actual)
-                    set_results[sl][layer_name]["kl_cat"].extend(
-                        kl_c.cpu().tolist()
-                    )
-                    set_results[sl][layer_name]["kl_global"].extend(
-                        kl_g.cpu().tolist()
-                    )
-                    set_results[sl][layer_name]["kl_zero"].extend(
-                        kl_z.cpu().tolist()
-                    )
-                    set_results[sl][layer_name]["kl_rand"].extend(
-                        kl_r.cpu().tolist()
-                    )
+                    set_results[sl][layer_name]["kl_cat"].extend(kl_c.cpu().tolist())
+                    set_results[sl][layer_name]["kl_global"].extend(kl_g.cpu().tolist())
+                    set_results[sl][layer_name]["kl_zero"].extend(kl_z.cpu().tolist())
+                    set_results[sl][layer_name]["kl_rand"].extend(kl_r.cpu().tolist())
 
                     gold_idx_exp = gold_idx.repeat(4)
                     all_lp = all_log_probs[range(4 * actual), gold_idx_exp]
                     lp_c, lp_g, lp_z, lp_r = all_lp.split(actual)
-                    set_results[sl][layer_name]["dgp_cat"].extend(
-                        (lp_orig - lp_c).cpu().tolist()
-                    )
+                    set_results[sl][layer_name]["dgp_cat"].extend((lp_orig - lp_c).cpu().tolist())
                     set_results[sl][layer_name]["dgp_global"].extend(
                         (lp_orig - lp_g).cpu().tolist()
                     )
-                    set_results[sl][layer_name]["dgp_zero"].extend(
-                        (lp_orig - lp_z).cpu().tolist()
-                    )
-                    set_results[sl][layer_name]["dgp_rand"].extend(
-                        (lp_orig - lp_r).cpu().tolist()
-                    )
+                    set_results[sl][layer_name]["dgp_zero"].extend((lp_orig - lp_z).cpu().tolist())
+                    set_results[sl][layer_name]["dgp_rand"].extend((lp_orig - lp_r).cpu().tolist())
 
-                    logits_cat, logits_global, logits_zero, logits_rand = (
-                        all_logits.split(actual)
-                    )
+                    logits_cat, logits_global, logits_zero, logits_rand = all_logits.split(actual)
                     delta_cat = (logits_orig - logits_cat).float()
                     delta_global = (logits_orig - logits_global).float()
                     delta_zero = (logits_orig - logits_zero).float()
@@ -1088,8 +1049,12 @@ def run_joint_ablation(
                         bot_p_orig = probs_orig.gather(-1, bot_i.long())
                         top_p_abl = probs_abl.gather(-1, top_i.long())
                         bot_p_abl = probs_abl.gather(-1, bot_i.long())
-                        r[tk_key].append(torch.stack([top_i, top_v, top_p_orig, top_p_abl], dim=1).cpu())
-                        r[bk_key].append(torch.stack([bot_i, bot_v, bot_p_orig, bot_p_abl], dim=1).cpu())
+                        r[tk_key].append(
+                            torch.stack([top_i, top_v, top_p_orig, top_p_abl], dim=1).cpu()
+                        )
+                        r[bk_key].append(
+                            torch.stack([bot_i, bot_v, bot_p_orig, bot_p_abl], dim=1).cpu()
+                        )
 
         cat_dir = run_dir / fs_safe(name)
         cat_dir.mkdir(parents=True, exist_ok=True)
@@ -1137,14 +1102,34 @@ def run_joint_ablation(
                     "abs_mean_zero": res["delta_abs_sum_zero"] / length,
                     "signed_mean_rand": res["delta_sum_rand"] / length,
                     "abs_mean_rand": res["delta_abs_sum_rand"] / length,
-                    "topk_cat": torch.cat(res["topk_cat"], dim=0) if res["topk_cat"] else torch.empty(0),
-                    "botk_cat": torch.cat(res["botk_cat"], dim=0) if res["botk_cat"] else torch.empty(0),
-                    "topk_global": torch.cat(res["topk_global"], dim=0) if res["topk_global"] else torch.empty(0),
-                    "botk_global": torch.cat(res["botk_global"], dim=0) if res["botk_global"] else torch.empty(0),
-                    "topk_zero": torch.cat(res["topk_zero"], dim=0) if res["topk_zero"] else torch.empty(0),
-                    "botk_zero": torch.cat(res["botk_zero"], dim=0) if res["botk_zero"] else torch.empty(0),
-                    "topk_rand": torch.cat(res["topk_rand"], dim=0) if res["topk_rand"] else torch.empty(0),
-                    "botk_rand": torch.cat(res["botk_rand"], dim=0) if res["botk_rand"] else torch.empty(0),
+                    "topk_cat": (
+                        torch.cat(res["topk_cat"], dim=0) if res["topk_cat"] else torch.empty(0)
+                    ),
+                    "botk_cat": (
+                        torch.cat(res["botk_cat"], dim=0) if res["botk_cat"] else torch.empty(0)
+                    ),
+                    "topk_global": (
+                        torch.cat(res["topk_global"], dim=0)
+                        if res["topk_global"]
+                        else torch.empty(0)
+                    ),
+                    "botk_global": (
+                        torch.cat(res["botk_global"], dim=0)
+                        if res["botk_global"]
+                        else torch.empty(0)
+                    ),
+                    "topk_zero": (
+                        torch.cat(res["topk_zero"], dim=0) if res["topk_zero"] else torch.empty(0)
+                    ),
+                    "botk_zero": (
+                        torch.cat(res["botk_zero"], dim=0) if res["botk_zero"] else torch.empty(0)
+                    ),
+                    "topk_rand": (
+                        torch.cat(res["topk_rand"], dim=0) if res["topk_rand"] else torch.empty(0)
+                    ),
+                    "botk_rand": (
+                        torch.cat(res["botk_rand"], dim=0) if res["botk_rand"] else torch.empty(0)
+                    ),
                 }
         torch.save(delta_logits, cat_dir / "joint_delta_logits.pt")
 

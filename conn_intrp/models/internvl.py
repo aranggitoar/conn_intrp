@@ -454,9 +454,7 @@ class InternVLAdapter(ModelAdapter):
             output_scores=True,
             return_dict_in_generate=True,
         )
-        preds = self.processor.batch_decode(
-            gen_out.sequences, skip_special_tokens=True
-        )
+        preds = self.processor.batch_decode(gen_out.sequences, skip_special_tokens=True)
         return preds, gen_out.scores[0]
 
     def get_logits(
@@ -495,9 +493,7 @@ class InternVLAdapter(ModelAdapter):
             "linear_2": self.S.float() * (gelu_out @ self.Vt.T.float()),
         }
 
-    def forward_connector_from(
-        self, layer_name: str, layer_output: torch.Tensor
-    ) -> torch.Tensor:
+    def forward_connector_from(self, layer_name: str, layer_output: torch.Tensor) -> torch.Tensor:
         if layer_name == "linear_1":
             hidden = self.mmp.act(layer_output)
             return self.mmp.linear_2(hidden.to(self.compute_dtype))

@@ -70,8 +70,7 @@ def run_spatial_probe(
     svd_info = {l.name: l for l in adapter.svd_layers}
     if isinstance(directions, list):
         directions = {
-            name: [d for d in directions if d < layer.n_dirs]
-            for name, layer in svd_info.items()
+            name: [d for d in directions if d < layer.n_dirs] for name, layer in svd_info.items()
         }
 
     grid_size = int(math.sqrt(adapter.n_patches))
@@ -128,10 +127,7 @@ def run_spatial_probe(
         cat_dir = run_dir / fs_safe(name)
         cat_dir.mkdir(exist_ok=True)
 
-        result = {
-            layer: torch.cat(chunks, dim=0)
-            for layer, chunks in projections.items()
-        }
+        result = {layer: torch.cat(chunks, dim=0) for layer, chunks in projections.items()}
         torch.save(result, cat_dir / "probe_projections.pt")
 
         save_json(

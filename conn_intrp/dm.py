@@ -104,8 +104,11 @@ def evaluate_mask_kl(
     :rtype: dict[str, float]
     """
     results = evaluate_masks_kl(
-        adapter, data, [mask_weights],
-        step=step, image_base_path=image_base_path,
+        adapter,
+        data,
+        [mask_weights],
+        step=step,
+        image_base_path=image_base_path,
     )
     return results[0]
 
@@ -182,9 +185,7 @@ def evaluate_masks_kl(
                 if ln not in all_layer_names:
                     continue
 
-                active = [
-                    si for si in range(n_sets) if ln in mask_sets[si]
-                ]
+                active = [si for si in range(n_sets) if ln in mask_sets[si]]
                 if not active:
                     continue
 
@@ -199,26 +200,18 @@ def evaluate_masks_kl(
                         conn_out_masked = adapter.run_connector_layer_masked(
                             vision_out, ln, W_masked
                         )
-                        embeds_masked = adapter.merge_embeds(
-                            inputs, text_embeds, conn_out_masked
-                        )
+                        embeds_masked = adapter.merge_embeds(inputs, text_embeds, conn_out_masked)
                         chunk_embeds.append(embeds_masked)
 
                     stacked_embeds = torch.cat(chunk_embeds, dim=0)
                     stacked_attn = attention_mask.repeat(len(chunk), 1)
 
-                    with torch.autocast(
-                        device_type="cuda", dtype=adapter.compute_dtype
-                    ):
-                        stacked_logits = adapter.get_logits(
-                            stacked_embeds, stacked_attn
-                        )
+                    with torch.autocast(device_type="cuda", dtype=adapter.compute_dtype):
+                        stacked_logits = adapter.get_logits(stacked_embeds, stacked_attn)
                     stacked_p = F.log_softmax(stacked_logits.float(), dim=-1)
                     p_orig_exp = p_original.float().repeat(len(chunk), 1)
 
-                    kl_per_sample = F.kl_div(
-                        stacked_p, p_orig_exp, reduction="none"
-                    ).sum(dim=-1)
+                    kl_per_sample = F.kl_div(stacked_p, p_orig_exp, reduction="none").sum(dim=-1)
                     kl_all = kl_per_sample.view(len(chunk), B).mean(dim=1)
 
                     for j, si in enumerate(chunk):
@@ -230,10 +223,7 @@ def evaluate_masks_kl(
         torch.cuda.empty_cache()
         n_steps += 1
 
-    return [
-        {ln: kl_sums[si][ln] / max(n_steps, 1) for ln in mask_sets[si]}
-        for si in range(n_sets)
-    ]
+    return [{ln: kl_sums[si][ln] / max(n_steps, 1) for ln in mask_sets[si]} for si in range(n_sets)]
 
 
 def evaluate_dm_baselines(
@@ -276,6 +266,7 @@ def evaluate_dm_baselines(
         thresholds = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
 
     from .dm_analysis import load_dm_masks
+
     masks = load_dm_masks(run_dir)
     layer_names = list(masks.keys())
 
@@ -283,6 +274,7 @@ def evaluate_dm_baselines(
     results = {}
     if results_path.exists():
         import json
+
         with open(results_path) as f:
             results = json.load(f)
 
@@ -303,9 +295,7 @@ def evaluate_dm_baselines(
         for thr in thresholds:
             bin_masks = {}
             for ln, m in opt_masks.items():
-                binary = torch.where(
-                    m > thr, torch.ones_like(m), torch.zeros_like(m)
-                )
+                binary = torch.where(m > thr, torch.ones_like(m), torch.zeros_like(m))
                 bin_masks[ln] = binary
 
             mask_sets.append(bin_masks)
@@ -334,8 +324,11 @@ def evaluate_dm_baselines(
         )
 
         all_kls = evaluate_masks_kl(
-            adapter, data, mask_sets,
-            step=step, image_base_path=image_base_path,
+            adapter,
+            data,
+            mask_sets,
+            step=step,
+            image_base_path=image_base_path,
             desc=f'  "{name}"',
         )
 
@@ -368,8 +361,7 @@ def evaluate_dm_baselines(
             if thr_key == "continuous":
                 continue
             entry["random_kl_mean"] = {
-                ln: sum(v) / len(v)
-                for ln, v in entry["random_kl_per_seed"].items()
+                ln: sum(v) / len(v) for ln, v in entry["random_kl_per_seed"].items()
             }
 
         for thr in thresholds:
@@ -380,10 +372,10 @@ def evaluate_dm_baselines(
                 rnd_v = entry["random_kl_mean"][ln]
                 n_s = entry["survivors"][ln]
                 print(
-                    f'  {name}/{ln} thr={thr:.1f}: '
-                    f'{n_s} dirs, '
-                    f'opt_kl={opt_v:.6f}, '
-                    f'rand_kl={rnd_v:.6f}'
+                    f"  {name}/{ln} thr={thr:.1f}: "
+                    f"{n_s} dirs, "
+                    f"opt_kl={opt_v:.6f}, "
+                    f"rand_kl={rnd_v:.6f}"
                 )
 
         results[cat_key] = cat_results

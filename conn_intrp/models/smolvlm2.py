@@ -261,9 +261,7 @@ class SmolVLM2Adapter(ModelAdapter):
             output_scores=True,
             return_dict_in_generate=True,
         )
-        preds = self.processor.batch_decode(
-            gen_out.sequences, skip_special_tokens=True
-        )
+        preds = self.processor.batch_decode(gen_out.sequences, skip_special_tokens=True)
         return preds, gen_out.scores[0]
 
     def get_logits(
@@ -297,9 +295,7 @@ class SmolVLM2Adapter(ModelAdapter):
     def compute_coefficients_per_layer(self, inputs: dict) -> dict[str, torch.Tensor]:
         return {"proj": self.compute_coefficients(inputs)}
 
-    def forward_connector_from(
-        self, layer_name: str, layer_output: torch.Tensor
-    ) -> torch.Tensor:
+    def forward_connector_from(self, layer_name: str, layer_output: torch.Tensor) -> torch.Tensor:
         return layer_output
 
     def compute_probe_projections(self, inputs: dict) -> dict[str, torch.Tensor]:

@@ -296,7 +296,9 @@ def direction_profile(
 
 
 def random_mask(
-    n_dirs: int, n_survivors: int, seed: int = 0,
+    n_dirs: int,
+    n_survivors: int,
+    seed: int = 0,
 ) -> torch.Tensor:
     """
     Generate a binary-ish mask with *n_survivors* random directions on.
