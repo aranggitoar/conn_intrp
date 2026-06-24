@@ -13,16 +13,18 @@ Baselines: per-category mean, global mean, zero, random.
 Example::
 
     >>> from conn_intrp import compute_category_means, run_ablation
-    >>> coeffs, cat_means, global_mean = compute_category_means(
+    >>> cat_means, global_mean = compute_category_means(
     ...     adapter, categorized, batch_size=4,
-    ...     image_base_path=img_path, run_dir=run_dir)
-    >>> run_ablation(adapter, categorized, coeffs, cat_means, global_mean,
+    ...     image_base_path=img_path, run_dir=coeff_dir)
+    >>> run_ablation(adapter, categorized, cat_means, global_mean,
     ...     directions_to_ablate={"linear_1": [3, 7], "linear_2": [23, 70]},
     ...     batch_size=4, K=15,
-    ...     image_base_path=img_path, run_dir=run_dir)
+    ...     image_base_path=img_path, run_dir=run_dir,
+    ...     coefficients_dir=coeff_dir)
 
 Main Functions:
     compute_category_means: SVD coefficients + per-category/global means.
+    load_category_coefficients: Load one category's coefficients from checkpoint.
     run_ablation: Per-direction ablation with ANLS scoring and Δlogit extraction.
     run_joint_ablation: Multi-direction set ablation for validating DM masks.
 """
@@ -49,16 +51,75 @@ from .output import (
 
 def _load_ckpt_compat(
     ckpt: dict, component_name: str
-) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor], dict[str, torch.Tensor] | None]:
-    raw_coeff = ckpt["coefficients"]
+) -> tuple[
+    dict[str, torch.Tensor] | None,
+    dict[str, torch.Tensor],
+    dict[str, torch.Tensor] | None,
+]:
+    raw_coeff = ckpt.get("coefficients")
     raw_astar = ckpt["a_star"]
     if isinstance(raw_coeff, torch.Tensor):
         raw_coeff = {component_name: raw_coeff}
+    if isinstance(raw_astar, torch.Tensor):
         raw_astar = {component_name: raw_astar}
     raw_contrib = ckpt.get("global_mean_contrib")
     if isinstance(raw_contrib, torch.Tensor):
         raw_contrib = {component_name: raw_contrib}
     return raw_coeff, raw_astar, raw_contrib
+
+
+def load_all_coefficients(
+    run_dir: Path,
+    category_names: list[str],
+    component_name: str,
+) -> dict[str, dict[str, torch.Tensor]]:
+    """
+    Load all categories' per-layer SVD coefficients from checkpoints.
+
+    :param run_dir: Directory containing category checkpoints.
+    :type run_dir: Path
+    :param category_names: Category names to load.
+    :type category_names: list[str]
+    :param component_name: Adapter's ``component_name`` for old-format compat.
+    :type component_name: str
+    :returns: ``{category: {layer_name: Tensor}}`` on CPU.
+    :rtype: dict[str, dict[str, torch.Tensor]]
+    """
+    return {
+        name: load_category_coefficients(run_dir, name, component_name)
+        for name in category_names
+    }
+
+
+def load_category_coefficients(
+    run_dir: Path,
+    category_name: str,
+    component_name: str,
+) -> dict[str, torch.Tensor]:
+    """
+    Load one category's per-layer SVD coefficients from checkpoint.
+
+    :param run_dir: Directory containing category checkpoints.
+    :type run_dir: Path
+    :param category_name: Category name (will be fs-safe'd).
+    :type category_name: str
+    :param component_name: Adapter's ``component_name`` for old-format compat.
+    :type component_name: str
+    :returns: ``{layer_name: Tensor}`` on CPU.
+    :rtype: dict[str, torch.Tensor]
+    """
+    ckpt = load_checkpoint(run_dir, category_name)
+    if ckpt is None:
+        raise FileNotFoundError(
+            f'No checkpoint for "{category_name}" in {run_dir}'
+        )
+    raw_coeff, _, _ = _load_ckpt_compat(ckpt, component_name)
+    if raw_coeff is None:
+        raise ValueError(
+            f'Checkpoint for "{category_name}" has no coefficients '
+            f"(saved with save_coefficients=False?)"
+        )
+    return raw_coeff
 
 
 def compute_category_means(
@@ -68,8 +129,8 @@ def compute_category_means(
     batch_size: int,
     image_base_path: Path,
     run_dir: Path,
+    save_coefficients: bool = True,
 ) -> tuple[
-    dict[str, dict[str, torch.Tensor]],
     dict[str, dict[str, torch.Tensor]],
     dict[str, torch.Tensor],
 ]:
@@ -79,6 +140,12 @@ def compute_category_means(
     Images appearing in multiple categories are counted once for the
     global mean (tracked via a ``seen_images`` set). Supports resuming
     from checkpoints (including old single-layer format).
+
+    When *save_coefficients* is True (default), per-category coefficient
+    tensors are included in checkpoints for later use by
+    :func:`run_ablation`. Set to False to save only means (smaller
+    checkpoints). Use :func:`load_category_coefficients` or
+    :func:`load_all_coefficients` to load coefficients on demand.
 
     :param adapter: Model adapter instance.
     :type adapter: ModelAdapter
@@ -90,17 +157,18 @@ def compute_category_means(
     :type image_base_path: Path
     :param run_dir: Output directory for this run.
     :type run_dir: Path
-    :returns: ``(per_category_coefficients, per_category_a_star, global_a_star)``
-        where coefficients are ``{cat: {layer: Tensor}}`` on CPU and
-        means are ``{cat: {layer: Tensor}}`` / ``{layer: Tensor}`` on CUDA.
+    :param save_coefficients: Whether to include raw coefficient tensors
+        in checkpoints. Default True.
+    :type save_coefficients: bool
+    :returns: ``(per_category_a_star, global_a_star)`` where means are
+        ``{cat: {layer: Tensor}}`` / ``{layer: Tensor}`` on CUDA.
     :rtype: tuple[dict[str, dict[str, torch.Tensor]],
-        dict[str, dict[str, torch.Tensor]], dict[str, torch.Tensor]]
+        dict[str, torch.Tensor]]
     """
     layers = adapter.svd_layers
     layer_names = [l.name for l in layers]
     completed = get_completed_categories(run_dir)
 
-    per_category_coefficients: dict[str, dict[str, torch.Tensor]] = {}
     per_category_a_star: dict[str, dict[str, torch.Tensor]] = {}
 
     global_mean_sum = {
@@ -112,93 +180,91 @@ def compute_category_means(
     for name, data in tqdm(data_categorized.items(), desc="Computing category means"):
         if fs_safe(name) in completed:
             ckpt = load_checkpoint(run_dir, name)
-            raw_coeff, raw_astar, raw_contrib = _load_ckpt_compat(
-                ckpt, adapter.component_name
-            )
-            missing = set(layer_names) - set(raw_coeff.keys())
-            if not missing:
-                per_category_coefficients[name] = raw_coeff
-                per_category_a_star[name] = {
-                    ln: raw_astar[ln].to(dtype=adapter.compute_dtype, device="cuda")
-                    for ln in raw_astar
-                }
-                for img_id in ckpt.get("new_image_ids", []):
+            if ckpt is not None and "a_star" in ckpt:
+                raw_coeff, raw_astar, raw_contrib = _load_ckpt_compat(
+                    ckpt, adapter.component_name
+                )
+                missing = set(layer_names) - set(raw_astar.keys())
+                if not missing:
+                    per_category_a_star[name] = {
+                        ln: raw_astar[ln].to(dtype=adapter.compute_dtype, device="cuda")
+                        for ln in raw_astar
+                    }
+                    for img_id in ckpt.get("new_image_ids", []):
+                        seen_images.add(img_id)
+                    if raw_contrib is not None:
+                        for ln in raw_contrib:
+                            if ln in global_mean_sum:
+                                global_mean_sum[ln] += raw_contrib[ln]
+                    n_unique_images += ckpt.get("n_new_images", 0)
+                    print(f'  Loaded checkpoint for "{name}"')
+                    continue
+                print(
+                    f'  Checkpoint for "{name}" missing layers {missing}'
+                    f" — computing"
+                )
+                new_image_set = set(ckpt.get("new_image_ids", []))
+                for img_id in new_image_set:
                     seen_images.add(img_id)
                 if raw_contrib is not None:
                     for ln in raw_contrib:
                         if ln in global_mean_sum:
                             global_mean_sum[ln] += raw_contrib[ln]
                 n_unique_images += ckpt.get("n_new_images", 0)
-                print(f'  Loaded checkpoint for "{name}"')
-                continue
-            print(
-                f'  Checkpoint for "{name}" missing layers {missing}'
-                f" — computing"
-            )
-            new_image_set = set(ckpt.get("new_image_ids", []))
-            for img_id in new_image_set:
-                seen_images.add(img_id)
-            if raw_contrib is not None:
-                for ln in raw_contrib:
-                    if ln in global_mean_sum:
-                        global_mean_sum[ln] += raw_contrib[ln]
-            n_unique_images += ckpt.get("n_new_images", 0)
 
-            missing_svd = [l for l in layers if l.name in missing]
-            cat_coeff_new = {
-                l.name: torch.empty(len(data), adapter.n_patches, l.n_dirs)
-                for l in missing_svd
-            }
-            cat_contrib_new = {
-                l.name: torch.zeros(l.n_dirs, dtype=torch.float32)
-                for l in missing_svd
-            }
+                missing_svd = [l for l in layers if l.name in missing]
+                cat_coeff_new = {
+                    l.name: torch.empty(len(data), adapter.n_patches, l.n_dirs)
+                    for l in missing_svd
+                }
+                cat_contrib_new = {
+                    l.name: torch.zeros(l.n_dirs, dtype=torch.float32)
+                    for l in missing_svd
+                }
 
-            for i in tqdm(
-                range(0, len(data), batch_size),
-                total=math.ceil(len(data) / batch_size),
-                desc=f'"{name}" (missing layers)',
-            ):
-                batch = data[i : i + batch_size]
-                inputs = adapter.preprocess(batch, image_base_path)
-                coefficients = adapter.compute_coefficients_per_layer(inputs)
-                actual = next(iter(coefficients.values())).shape[0]
+                for i in tqdm(
+                    range(0, len(data), batch_size),
+                    total=math.ceil(len(data) / batch_size),
+                    desc=f'"{name}" (missing layers)',
+                ):
+                    batch = data[i : i + batch_size]
+                    inputs = adapter.preprocess(batch, image_base_path)
+                    coefficients = adapter.compute_coefficients_per_layer(inputs)
+                    actual = next(iter(coefficients.values())).shape[0]
+                    for ln in missing:
+                        cat_coeff_new[ln][i : i + actual] = coefficients[ln].cpu()
+                    for j, datum in enumerate(batch):
+                        if datum["image"] in new_image_set:
+                            for ln in missing:
+                                cat_contrib_new[ln] += (
+                                    coefficients[ln][j].mean(dim=0).cpu().float()
+                                )
+
+                merged_astar = dict(raw_astar)
+                merged_contrib = dict(raw_contrib) if raw_contrib else {}
                 for ln in missing:
-                    cat_coeff_new[ln][i : i + actual] = coefficients[ln].cpu()
-                for j, datum in enumerate(batch):
-                    if datum["image"] in new_image_set:
-                        for ln in missing:
-                            cat_contrib_new[ln] += (
-                                coefficients[ln][j].mean(dim=0).cpu().float()
-                            )
+                    merged_astar[ln] = cat_coeff_new[ln].mean(dim=(0, 1))
+                    merged_contrib[ln] = cat_contrib_new[ln]
+                    global_mean_sum[ln] += cat_contrib_new[ln]
 
-            merged_coeff = {**raw_coeff, **cat_coeff_new}
-            merged_astar = dict(raw_astar)
-            merged_contrib = dict(raw_contrib) if raw_contrib else {}
-            for ln in missing:
-                merged_astar[ln] = cat_coeff_new[ln].mean(dim=(0, 1))
-                merged_contrib[ln] = cat_contrib_new[ln]
-                global_mean_sum[ln] += cat_contrib_new[ln]
-
-            per_category_coefficients[name] = merged_coeff
-            per_category_a_star[name] = {
-                ln: merged_astar[ln].to(
-                    dtype=adapter.compute_dtype, device="cuda"
-                )
-                for ln in layer_names
-            }
-            save_checkpoint(
-                run_dir,
-                name,
-                {
-                    "coefficients": merged_coeff,
+                per_category_a_star[name] = {
+                    ln: merged_astar[ln].to(
+                        dtype=adapter.compute_dtype, device="cuda"
+                    )
+                    for ln in layer_names
+                }
+                ckpt_data = {
                     "a_star": {ln: merged_astar[ln] for ln in layer_names},
                     "new_image_ids": ckpt.get("new_image_ids", []),
                     "global_mean_contrib": merged_contrib,
                     "n_new_images": ckpt.get("n_new_images", 0),
-                },
-            )
-            continue
+                }
+                if save_coefficients:
+                    merged_coeff = dict(raw_coeff) if raw_coeff else {}
+                    merged_coeff.update(cat_coeff_new)
+                    ckpt_data["coefficients"] = merged_coeff
+                save_checkpoint(run_dir, name, ckpt_data)
+                continue
 
         length = len(data)
         cat_coefficients = {
@@ -233,30 +299,26 @@ def compute_category_means(
                             coefficients[ln][j].mean(dim=0).cpu().float()
                         )
 
-        per_category_coefficients[name] = cat_coefficients
-        per_category_a_star[name] = {
+        cat_a_star = {
             ln: cat_coefficients[ln].mean(dim=(0, 1)).to(
                 dtype=adapter.compute_dtype, device="cuda"
             )
             for ln in layer_names
         }
+        per_category_a_star[name] = cat_a_star
         for ln in layer_names:
             global_mean_sum[ln] += cat_global_contrib[ln]
         n_unique_images += len(cat_new_images)
 
-        save_checkpoint(
-            run_dir,
-            name,
-            {
-                "coefficients": cat_coefficients,
-                "a_star": {
-                    ln: per_category_a_star[name][ln].cpu() for ln in layer_names
-                },
-                "new_image_ids": cat_new_images,
-                "global_mean_contrib": cat_global_contrib,
-                "n_new_images": len(cat_new_images),
-            },
-        )
+        ckpt_data = {
+            "a_star": {ln: cat_a_star[ln].cpu() for ln in layer_names},
+            "new_image_ids": cat_new_images,
+            "global_mean_contrib": cat_global_contrib,
+            "n_new_images": len(cat_new_images),
+        }
+        if save_coefficients:
+            ckpt_data["coefficients"] = cat_coefficients
+        save_checkpoint(run_dir, name, ckpt_data)
 
     global_a_star = {
         ln: (global_mean_sum[ln] / n_unique_images).to(
@@ -273,13 +335,12 @@ def compute_category_means(
         },
     )
 
-    return per_category_coefficients, per_category_a_star, global_a_star
+    return per_category_a_star, global_a_star
 
 
 def run_ablation(
     adapter: ModelAdapter,
     data_categorized: dict[str, list],
-    per_category_coefficients: dict[str, dict[str, torch.Tensor]],
     per_category_a_star: dict[str, dict[str, torch.Tensor]],
     global_a_star: dict[str, torch.Tensor],
     *,
@@ -288,6 +349,7 @@ def run_ablation(
     K: int,
     image_base_path: Path,
     run_dir: Path,
+    coefficients_dir: Path,
     rand_seed: int = 42,
 ) -> None:
     """
@@ -302,9 +364,6 @@ def run_ablation(
     :type adapter: ModelAdapter
     :param data_categorized: Map of category name to list of data dicts.
     :type data_categorized: dict[str, list]
-    :param per_category_coefficients: Per-layer SVD coefficients per category
-        (CPU), ``{cat: {layer: Tensor}}``.
-    :type per_category_coefficients: dict[str, dict[str, torch.Tensor]]
     :param per_category_a_star: Per-layer category means (CUDA),
         ``{cat: {layer: Tensor}}``.
     :type per_category_a_star: dict[str, dict[str, torch.Tensor]]
@@ -321,6 +380,9 @@ def run_ablation(
     :type image_base_path: Path
     :param run_dir: Output directory for this run.
     :type run_dir: Path
+    :param coefficients_dir: Directory containing per-category coefficient
+        checkpoints (from :func:`compute_category_means`).
+    :type coefficients_dir: Path
     :param rand_seed: Seed for the random baseline generator.
     :type rand_seed: int
     """
@@ -361,8 +423,11 @@ def run_ablation(
 
         length = len(data)
         cat_a_star = per_category_a_star[name]
+        cat_coefficients = load_category_coefficients(
+            coefficients_dir, name, adapter.component_name
+        )
         cat_std = {
-            ln: per_category_coefficients[name][ln].float().std(dim=(0, 1))
+            ln: cat_coefficients[ln].float().std(dim=(0, 1))
             for ln in directions_to_ablate
         }
         rand_gen = torch.Generator().manual_seed(rand_seed)
@@ -419,7 +484,7 @@ def run_ablation(
             for layer in adapter.svd_layers:
                 if layer.name not in directions_to_ablate:
                     continue
-                coeff = per_category_coefficients[name][layer.name][
+                coeff = cat_coefficients[layer.name][
                     i : i + actual
                 ].to(dtype=adapter.compute_dtype, device="cuda")
                 batch_coeffs[layer.name] = coeff
@@ -433,7 +498,7 @@ def run_ablation(
                 if last_layer.name in layer_outputs:
                     conn_out_orig = layer_outputs[last_layer.name]
                 else:
-                    last_coeff = per_category_coefficients[name][
+                    last_coeff = cat_coefficients[
                         last_layer.name
                     ][i : i + actual].to(
                         dtype=adapter.compute_dtype, device="cuda"
@@ -716,7 +781,6 @@ def run_ablation(
 def run_joint_ablation(
     adapter: ModelAdapter,
     data_categorized: dict[str, list],
-    per_category_coefficients: dict[str, dict[str, torch.Tensor]],
     per_category_a_star: dict[str, dict[str, torch.Tensor]],
     global_a_star: dict[str, torch.Tensor],
     *,
@@ -725,6 +789,7 @@ def run_joint_ablation(
     K: int,
     image_base_path: Path,
     run_dir: Path,
+    coefficients_dir: Path,
     rand_seed: int = 42,
 ) -> None:
     """
@@ -739,9 +804,6 @@ def run_joint_ablation(
     :type adapter: ModelAdapter
     :param data_categorized: Map of category name to list of data dicts.
     :type data_categorized: dict[str, list]
-    :param per_category_coefficients: Per-layer SVD coefficients per category
-        (CPU), ``{cat: {layer: Tensor}}``.
-    :type per_category_coefficients: dict[str, dict[str, torch.Tensor]]
     :param per_category_a_star: Per-layer category means (CUDA),
         ``{cat: {layer: Tensor}}``.
     :type per_category_a_star: dict[str, dict[str, torch.Tensor]]
@@ -758,6 +820,9 @@ def run_joint_ablation(
     :type image_base_path: Path
     :param run_dir: Output directory for this run.
     :type run_dir: Path
+    :param coefficients_dir: Directory containing per-category coefficient
+        checkpoints (from :func:`compute_category_means`).
+    :type coefficients_dir: Path
     :param rand_seed: Seed for the random baseline generator.
     :type rand_seed: int
     """
@@ -798,9 +863,12 @@ def run_joint_ablation(
 
         length = len(data)
         cat_a_star = per_category_a_star[name]
+        cat_coefficients = load_category_coefficients(
+            coefficients_dir, name, adapter.component_name
+        )
         cat_std = {
-            ln: per_category_coefficients[name][ln].float().std(dim=(0, 1))
-            for ln in per_category_coefficients[name]
+            ln: cat_coefficients[ln].float().std(dim=(0, 1))
+            for ln in cat_coefficients
         }
 
         nls_original = []
@@ -845,7 +913,7 @@ def run_joint_ablation(
             batch_coeffs = {}
             layer_outputs = {}
             for layer in adapter.svd_layers:
-                coeff = per_category_coefficients[name][layer.name][
+                coeff = cat_coefficients[layer.name][
                     i : i + actual
                 ].to(dtype=adapter.compute_dtype, device="cuda")
                 batch_coeffs[layer.name] = coeff
