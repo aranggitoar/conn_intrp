@@ -115,19 +115,89 @@ def compute_category_means(
             raw_coeff, raw_astar, raw_contrib = _load_ckpt_compat(
                 ckpt, adapter.component_name
             )
-            per_category_coefficients[name] = raw_coeff
-            per_category_a_star[name] = {
-                ln: raw_astar[ln].to(dtype=adapter.compute_dtype, device="cuda")
-                for ln in raw_astar
-            }
-            for img_id in ckpt.get("new_image_ids", []):
+            missing = set(layer_names) - set(raw_coeff.keys())
+            if not missing:
+                per_category_coefficients[name] = raw_coeff
+                per_category_a_star[name] = {
+                    ln: raw_astar[ln].to(dtype=adapter.compute_dtype, device="cuda")
+                    for ln in raw_astar
+                }
+                for img_id in ckpt.get("new_image_ids", []):
+                    seen_images.add(img_id)
+                if raw_contrib is not None:
+                    for ln in raw_contrib:
+                        if ln in global_mean_sum:
+                            global_mean_sum[ln] += raw_contrib[ln]
+                n_unique_images += ckpt.get("n_new_images", 0)
+                print(f'  Loaded checkpoint for "{name}"')
+                continue
+            print(
+                f'  Checkpoint for "{name}" missing layers {missing}'
+                f" — computing"
+            )
+            new_image_set = set(ckpt.get("new_image_ids", []))
+            for img_id in new_image_set:
                 seen_images.add(img_id)
             if raw_contrib is not None:
                 for ln in raw_contrib:
                     if ln in global_mean_sum:
                         global_mean_sum[ln] += raw_contrib[ln]
             n_unique_images += ckpt.get("n_new_images", 0)
-            print(f'  Loaded checkpoint for "{name}"')
+
+            missing_svd = [l for l in layers if l.name in missing]
+            cat_coeff_new = {
+                l.name: torch.empty(len(data), adapter.n_patches, l.n_dirs)
+                for l in missing_svd
+            }
+            cat_contrib_new = {
+                l.name: torch.zeros(l.n_dirs, dtype=torch.float32)
+                for l in missing_svd
+            }
+
+            for i in tqdm(
+                range(0, len(data), batch_size),
+                total=math.ceil(len(data) / batch_size),
+                desc=f'"{name}" (missing layers)',
+            ):
+                batch = data[i : i + batch_size]
+                inputs = adapter.preprocess(batch, image_base_path)
+                coefficients = adapter.compute_coefficients_per_layer(inputs)
+                actual = next(iter(coefficients.values())).shape[0]
+                for ln in missing:
+                    cat_coeff_new[ln][i : i + actual] = coefficients[ln].cpu()
+                for j, datum in enumerate(batch):
+                    if datum["image"] in new_image_set:
+                        for ln in missing:
+                            cat_contrib_new[ln] += (
+                                coefficients[ln][j].mean(dim=0).cpu().float()
+                            )
+
+            merged_coeff = {**raw_coeff, **cat_coeff_new}
+            merged_astar = dict(raw_astar)
+            merged_contrib = dict(raw_contrib) if raw_contrib else {}
+            for ln in missing:
+                merged_astar[ln] = cat_coeff_new[ln].mean(dim=(0, 1))
+                merged_contrib[ln] = cat_contrib_new[ln]
+                global_mean_sum[ln] += cat_contrib_new[ln]
+
+            per_category_coefficients[name] = merged_coeff
+            per_category_a_star[name] = {
+                ln: merged_astar[ln].to(
+                    dtype=adapter.compute_dtype, device="cuda"
+                )
+                for ln in layer_names
+            }
+            save_checkpoint(
+                run_dir,
+                name,
+                {
+                    "coefficients": merged_coeff,
+                    "a_star": {ln: merged_astar[ln] for ln in layer_names},
+                    "new_image_ids": ckpt.get("new_image_ids", []),
+                    "global_mean_contrib": merged_contrib,
+                    "n_new_images": ckpt.get("n_new_images", 0),
+                },
+            )
             continue
 
         length = len(data)
