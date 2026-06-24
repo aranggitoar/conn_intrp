@@ -7,7 +7,7 @@ Pipeline phases:
   3. Spatial probe — visualize direction activation patterns
 """
 
-from .ablation import compute_category_means, run_ablation
+from .ablation import compute_category_means, run_ablation, run_joint_ablation
 from .cka import linear_cka
 from .config import DirectionalMaskingConfig
 from .data import HARNESS_PROMPT, best_anls, filter_categories, load_docvqa, relaxed_anls
@@ -54,6 +54,7 @@ __all__ = [
     "evaluate_dm_baselines",
     "compute_category_means",
     "run_ablation",
+    "run_joint_ablation",
     "run_spatial_probe",
     "plot_probe_heatmap",
     "save_probe_heatmaps",

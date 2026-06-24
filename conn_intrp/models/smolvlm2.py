@@ -294,6 +294,14 @@ class SmolVLM2Adapter(ModelAdapter):
             )
         return self.model.lm_head(text_out[0][:, -1, :])
 
+    def compute_coefficients_per_layer(self, inputs: dict) -> dict[str, torch.Tensor]:
+        return {"proj": self.compute_coefficients(inputs)}
+
+    def forward_connector_from(
+        self, layer_name: str, layer_output: torch.Tensor
+    ) -> torch.Tensor:
+        return layer_output
+
     def compute_probe_projections(self, inputs: dict) -> dict[str, torch.Tensor]:
         """
         Cosine similarity of pixel-shuffled vision output with each right

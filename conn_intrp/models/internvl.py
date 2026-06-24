@@ -486,6 +486,23 @@ class InternVLAdapter(ModelAdapter):
         B = embeds.shape[0]
         return torch.stack([self.model.lm_head(text_out[0][b, last_pos[b], :]) for b in range(B)])
 
+    def compute_coefficients_per_layer(self, inputs: dict) -> dict[str, torch.Tensor]:
+        vision_out = self.extract_vision(inputs)
+        ln_out = self.mmp.layer_norm(vision_out).float()
+        gelu_out = self.mmp.act(self.mmp.linear_1(ln_out.to(self.compute_dtype))).float()
+        return {
+            "linear_1": self.S1.float() * (ln_out @ self.Vt1.T.float()),
+            "linear_2": self.S.float() * (gelu_out @ self.Vt.T.float()),
+        }
+
+    def forward_connector_from(
+        self, layer_name: str, layer_output: torch.Tensor
+    ) -> torch.Tensor:
+        if layer_name == "linear_1":
+            hidden = self.mmp.act(layer_output)
+            return self.mmp.linear_2(hidden.to(self.compute_dtype))
+        return layer_output
+
     def compute_probe_projections(self, inputs: dict) -> dict[str, torch.Tensor]:
         """
         Cosine similarity of each MLP layer's input with the layer's

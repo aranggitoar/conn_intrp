@@ -329,6 +329,38 @@ class ModelAdapter:
             out = out + self.proj_bias.to(coefficients.dtype)
         return out
 
+    def compute_coefficients_per_layer(self, inputs: dict) -> dict[str, torch.Tensor]:
+        """
+        Compute SVD coefficients for every connector layer.
+
+        Each entry is ``S_layer * (layer_input @ Vt_layer.T)``.
+
+        :param inputs: Tokenized inputs from :meth:`preprocess`.
+        :type inputs: dict
+        :returns: Map of layer name to coefficients of shape
+            ``(B, n_patches, n_dirs_for_layer)``.
+        :rtype: dict[str, torch.Tensor]
+        """
+        raise NotImplementedError
+
+    def forward_connector_from(
+        self, layer_name: str, layer_output: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Run the connector from *layer_name*'s output to the final output.
+
+        For the last layer this is identity. For earlier layers it runs
+        the remaining operations (e.g. GELU → linear_2).
+
+        :param layer_name: Layer whose output is provided.
+        :type layer_name: str
+        :param layer_output: Modified output of the named layer.
+        :type layer_output: torch.Tensor
+        :returns: Final connector output.
+        :rtype: torch.Tensor
+        """
+        raise NotImplementedError
+
     def compute_probe_projections(self, inputs: dict) -> dict[str, torch.Tensor]:
         """
         L2-normalised projection of each connector layer's input onto
