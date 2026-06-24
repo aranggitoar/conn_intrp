@@ -202,11 +202,16 @@ def compute_category_means(
 
                 missing_svd = [l for l in layers if l.name in missing]
                 cat_coeff_new = {
-                    l.name: torch.empty(len(data), adapter.n_patches, l.n_dirs) for l in missing_svd
+                    l.name: torch.empty(len(data), adapter.n_patches, l.n_dirs, dtype=torch.float16)
+                    for l in missing_svd
                 }
                 cat_contrib_new = {
                     l.name: torch.zeros(l.n_dirs, dtype=torch.float32) for l in missing_svd
                 }
+                cat_mean_sum_new = {
+                    l.name: torch.zeros(l.n_dirs, dtype=torch.float32) for l in missing_svd
+                }
+                n_patches_seen_new = 0
 
                 for i in tqdm(
                     range(0, len(data), batch_size),
@@ -219,6 +224,8 @@ def compute_category_means(
                     actual = next(iter(coefficients.values())).shape[0]
                     for ln in missing:
                         cat_coeff_new[ln][i : i + actual] = coefficients[ln].cpu()
+                        cat_mean_sum_new[ln] += coefficients[ln].sum(dim=(0, 1)).cpu().float()
+                    n_patches_seen_new += actual * adapter.n_patches
                     for j, datum in enumerate(batch):
                         if datum["image"] in new_image_set:
                             for ln in missing:
@@ -227,7 +234,7 @@ def compute_category_means(
                 merged_astar = dict(raw_astar)
                 merged_contrib = dict(raw_contrib) if raw_contrib else {}
                 for ln in missing:
-                    merged_astar[ln] = cat_coeff_new[ln].mean(dim=(0, 1))
+                    merged_astar[ln] = cat_mean_sum_new[ln] / n_patches_seen_new
                     merged_contrib[ln] = cat_contrib_new[ln]
                     global_mean_sum[ln] += cat_contrib_new[ln]
 
@@ -250,10 +257,13 @@ def compute_category_means(
 
         length = len(data)
         cat_coefficients = {
-            l.name: torch.empty(length, adapter.n_patches, l.n_dirs) for l in layers
+            l.name: torch.empty(length, adapter.n_patches, l.n_dirs, dtype=torch.float16)
+            for l in layers
         }
         cat_global_contrib = {l.name: torch.zeros(l.n_dirs, dtype=torch.float32) for l in layers}
+        cat_mean_sum = {l.name: torch.zeros(l.n_dirs, dtype=torch.float32) for l in layers}
         cat_new_images: list[str] = []
+        n_patches_seen = 0
 
         for i in tqdm(
             range(0, length, batch_size),
@@ -267,6 +277,9 @@ def compute_category_means(
 
             for ln in layer_names:
                 cat_coefficients[ln][i : i + actual] = coefficients[ln].cpu()
+                cat_mean_sum[ln] += coefficients[ln].sum(dim=(0, 1)).cpu().float()
+
+            n_patches_seen += actual * adapter.n_patches
 
             for j, datum in enumerate(batch):
                 img_id = datum["image"]
@@ -277,7 +290,7 @@ def compute_category_means(
                         cat_global_contrib[ln] += coefficients[ln][j].mean(dim=0).cpu().float()
 
         cat_a_star = {
-            ln: cat_coefficients[ln].mean(dim=(0, 1)).to(dtype=adapter.compute_dtype, device="cuda")
+            ln: (cat_mean_sum[ln] / n_patches_seen).to(dtype=adapter.compute_dtype, device="cuda")
             for ln in layer_names
         }
         per_category_a_star[name] = cat_a_star
