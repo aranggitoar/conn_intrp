@@ -173,7 +173,10 @@ def save_checkpoint(run_dir: str | Path, name: str, artifacts: dict) -> None:
     """
     ckpt_dir = Path(run_dir) / "checkpoints"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
-    torch.save(artifacts, ckpt_dir / f"{fs_safe(name)}.pt")
+    final = ckpt_dir / f"{fs_safe(name)}.pt"
+    tmp = final.with_suffix(".pt.tmp")
+    torch.save(artifacts, tmp)
+    tmp.rename(final)
 
 
 def load_checkpoint(run_dir: str | Path, name: str) -> dict | None:
