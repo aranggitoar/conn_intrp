@@ -16,6 +16,7 @@ Main Functions:
     load_dm_masks: Load all mask tensors from a run directory.
     summary_table: Per-layer, per-category stats as a DataFrame.
     survivors: Direction indices above a threshold.
+    gap_survivors: Direction indices where a category leads by a minimum gap.
     overlap_matrix: Category × category survivor overlap counts.
     jaccard_matrix: Category × category Jaccard similarity.
     distribution: Bucket breakdown of mask weights.
@@ -137,6 +138,40 @@ def survivors(
     """
     m = masks[layer][category]
     return torch.where(m > threshold)[0].tolist()
+
+
+def gap_survivors(
+    masks: dict[str, dict[str, torch.Tensor]],
+    layer: str,
+    category: str,
+    min_gap: float = 0.1,
+) -> list[tuple[int, float]]:
+    """
+    Direction indices where *category* has the highest mask weight
+    by at least *min_gap* over every other category.
+
+    Returns ``(direction_index, gap)`` pairs sorted by gap descending.
+
+    :param masks: Output of :func:`load_dm_masks`.
+    :type masks: dict[str, dict[str, torch.Tensor]]
+    :param layer: Layer name.
+    :type layer: str
+    :param category: Category name.
+    :type category: str
+    :param min_gap: Minimum weight difference vs. the next-best category.
+    :type min_gap: float
+    :returns: List of ``(direction_index, gap)`` sorted by gap descending.
+    :rtype: list[tuple[int, float]]
+    """
+    cats = list(masks[layer].keys())
+    all_w = torch.stack([masks[layer][c] for c in cats])  # (n_cats, n_dirs)
+    ci = cats.index(category)
+    cat_w = all_w[ci]
+    other_max = all_w[[j for j in range(len(cats)) if j != ci]].max(dim=0).values
+    gap = cat_w - other_max
+    hit = torch.where(gap > min_gap)[0]
+    order = gap[hit].argsort(descending=True)
+    return [(hit[i].item(), gap[hit[i]].item()) for i in order]
 
 
 def ranked_directions(
