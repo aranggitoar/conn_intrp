@@ -18,6 +18,7 @@ Main Functions:
     survivors: Direction indices above a threshold.
     gap_survivors: Direction indices where a category leads by a minimum gap.
     random_baseline_masks: Reproduce the exact random masks from evaluate_dm_baselines.
+    random_continuous_masks: Continuous uniform [0, 1] random masks for similarity baselines.
     overlap_matrix: Category × category survivor overlap counts.
     jaccard_matrix: Category × category Jaccard similarity.
     distribution: Bucket breakdown of mask weights.
@@ -369,6 +370,48 @@ def random_baseline_masks(
             idx = torch.randperm(n_dirs, generator=gen)[:n_surv]
             rm[idx] = 1.0
         out.append(rm)
+    return out
+
+
+def random_continuous_masks(
+    masks: dict[str, dict[str, torch.Tensor]],
+    layer: str,
+    n_seeds: int = 3,
+    survivor_indices: dict[str, list[int]] | None = None,
+) -> list[dict[str, torch.Tensor]]:
+    """
+    Generate continuous uniform [0, 1] random masks for all categories.
+
+    When *survivor_indices* is provided, each mask has the same length as
+    the index list for that category (only surviving directions). Otherwise
+    each mask has the full ``n_dirs`` length.
+
+    :param masks: Output of :func:`load_dm_masks`.
+    :type masks: dict[str, dict[str, torch.Tensor]]
+    :param layer: Layer name.
+    :type layer: str
+    :param n_seeds: Number of random seeds.
+    :type n_seeds: int
+    :param survivor_indices: If given, ``{category: [dir_indices]}``.
+        Each random mask will have length ``len(dir_indices)`` instead of
+        the full direction count.
+    :type survivor_indices: dict[str, list[int]] | None
+    :returns: List of dicts ``{category: mask_tensor}``, one per seed.
+    :rtype: list[dict[str, torch.Tensor]]
+    """
+    cats = list(masks[layer].keys())
+    n_dirs = masks[layer][cats[0]].numel()
+    out = []
+    for seed in range(n_seeds):
+        gen = torch.Generator().manual_seed(seed)
+        seed_masks = {}
+        for cat in cats:
+            if survivor_indices is not None and cat in survivor_indices:
+                length = len(survivor_indices[cat])
+            else:
+                length = n_dirs
+            seed_masks[cat] = torch.rand(length, generator=gen)
+        out.append(seed_masks)
     return out
 
 
