@@ -17,6 +17,7 @@ Main Functions:
     summary_table: Per-layer, per-category stats as a DataFrame.
     survivors: Direction indices above a threshold.
     gap_survivors: Direction indices where a category leads by a minimum gap.
+    random_baseline_masks: Reproduce the exact random masks from evaluate_dm_baselines.
     overlap_matrix: Category × category survivor overlap counts.
     jaccard_matrix: Category × category Jaccard similarity.
     distribution: Bucket breakdown of mask weights.
@@ -328,6 +329,47 @@ def direction_profile(
     for i, cat in enumerate(cats):
         data[cat] = survived[i].tolist()
     return pd.DataFrame(data)
+
+
+def random_baseline_masks(
+    masks: dict[str, dict[str, torch.Tensor]],
+    layer: str,
+    category: str,
+    threshold: float,
+    n_seeds: int = 3,
+) -> list[torch.Tensor]:
+    """
+    Reproduce the exact random masks that ``evaluate_dm_baselines`` used.
+
+    For each seed in ``range(n_seeds)``, generates a binary mask with the
+    same number of survivors as the optimized mask at *threshold*, using
+    the same RNG logic as ``evaluate_dm_baselines``.
+
+    :param masks: Output of :func:`load_dm_masks`.
+    :type masks: dict[str, dict[str, torch.Tensor]]
+    :param layer: Layer name.
+    :type layer: str
+    :param category: Category name.
+    :type category: str
+    :param threshold: Binarisation threshold.
+    :type threshold: float
+    :param n_seeds: Number of seeds (must match the run's ``n_random_seeds``).
+    :type n_seeds: int
+    :returns: List of binary mask tensors, one per seed.
+    :rtype: list[torch.Tensor]
+    """
+    m = masks[layer][category]
+    n_surv = int((m > threshold).sum().item())
+    n_dirs = m.numel()
+    out = []
+    for seed in range(n_seeds):
+        gen = torch.Generator().manual_seed(seed)
+        rm = torch.zeros(n_dirs)
+        if n_surv > 0:
+            idx = torch.randperm(n_dirs, generator=gen)[:n_surv]
+            rm[idx] = 1.0
+        out.append(rm)
+    return out
 
 
 def random_mask(
