@@ -43,6 +43,8 @@ def load_ablation(run_dir: str | Path) -> dict:
     for cat_dir in sorted(run_dir.iterdir()):
         if not cat_dir.is_dir():
             continue
+        if not (cat_dir / "anls_summary.json").exists():
+            continue
         cat = cat_dir.name
         entry = {}
         anls_path = cat_dir / "anls_summary.json"
