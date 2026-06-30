@@ -24,6 +24,7 @@ Main Functions:
     baseline_comparison: Zero vs cat-mean vs global-mean vs random KL
     cumulative_kl: Per-direction KL sorted by DM weight
     super_additivity: Joint vs sum-of-individual KL ratios
+    kl_budget: Active-set KL as fraction of total-layer KL budget
 """
 
 from .ablation import (
@@ -39,6 +40,7 @@ from .ablation_analysis import (
     cumulative_kl,
     gold_prob_summary,
     joint_kl_table,
+    kl_budget,
     load_ablation,
     most_changed_directions,
     super_additivity,
@@ -120,6 +122,7 @@ __all__ = [
     # ablation analysis
     "load_ablation",
     "joint_kl_table",
+    "kl_budget",
     "baseline_comparison",
     "cumulative_kl",
     "gold_prob_summary",

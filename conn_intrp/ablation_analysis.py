@@ -20,6 +20,7 @@ Main Functions:
     topk_botk_summary: Aggregated top-K/bottom-K token shifts per category
     super_additivity: Joint vs sum-of-individual KL ratios
     most_changed_directions: Directions with largest individual KL per category
+    kl_budget: Active-set KL as fraction of total-layer KL budget
 """
 
 import json
@@ -38,7 +39,7 @@ def load_ablation(run_dir: str | Path) -> dict:
     :param run_dir: Path to the ablation output directory
     :type run_dir: str | Path
     :returns: ``{category: {"anls": dict, "joint": dict, "delta_logits": dict,
-        "joint_delta_logits": dict}}``
+        "joint_delta_logits": dict, "total": dict}}``
     :rtype: dict
     """
     run_dir = Path(run_dir)
@@ -62,6 +63,10 @@ def load_ablation(run_dir: str | Path) -> dict:
         jdl_path = cat_dir / "joint_delta_logits.pt"
         if jdl_path.exists():
             entry["joint_delta_logits"] = torch.load(jdl_path, map_location="cpu", weights_only=True)
+        total_path = cat_dir / "total_ablation.json"
+        if total_path.exists():
+            with open(total_path) as f:
+                entry["total"] = json.load(f)
         result[cat] = entry
     return result
 
@@ -536,5 +541,88 @@ def most_changed_directions(
                     "mean_kl": kl,
                     "rank": rank,
                 })
+
+    return pd.DataFrame(rows)
+
+
+def kl_budget(
+    abl: dict,
+    *,
+    threshold: float = 0.7,
+    baseline: str = "cat",
+    budget_baseline: str = "global",
+) -> pd.DataFrame:
+    """
+    Active-set KL as a fraction of total-layer KL budget.
+
+    Requires ``total_ablation.json`` in the run directory (from
+    :func:`~conn_intrp.ablation.run_total_ablation`).
+
+    Reports both ratio-of-means (headline number, weighted toward
+    high-KL images) and per-image ratio distribution (median, IQR)
+    for a more complete picture.
+
+    :param abl: Loaded ablation results from :func:`load_ablation`
+    :type abl: dict
+    :param threshold: Binarisation threshold for the active set
+    :type threshold: float
+    :param baseline: Ablation baseline for the active-set KL
+    :type baseline: str
+    :param budget_baseline: Which total ablation to use as budget
+        denominator — ``"global"`` (recommended, no OOD spoofing) or
+        ``"zero"``
+    :type budget_baseline: str
+    :returns: DataFrame with columns: category, layer, n_active, n_total,
+        dir_frac, active_kl, budget_kl, budget_frac, efficiency,
+        spoofing_ratio, per_image_median, per_image_q25, per_image_q75
+    :rtype: pd.DataFrame
+    """
+    set_key = f"active_{threshold}"
+    kl_key = f"kl_{baseline}"
+    budget_key = f"kl_{budget_baseline}"
+
+    rows = []
+    for cat, data in sorted(abl.items()):
+        total = data.get("total")
+        sets = data.get("joint", {}).get("sets", {})
+        if total is None or set_key not in sets:
+            continue
+
+        for layer in sets[set_key]:
+            if layer not in total.get("layers", {}):
+                continue
+
+            act = sets[set_key][layer]
+            act_kl = np.array(act[kl_key])
+            budget_kl = np.array(total["layers"][layer][budget_key])
+            zero_kl = np.array(total["layers"][layer]["kl_zero"])
+            global_kl = np.array(total["layers"][layer]["kl_global"])
+
+            n_active = act["n_directions"]
+            n_total = total["n_directions"][layer]
+            dir_frac = n_active / n_total
+
+            act_mean = act_kl.mean()
+            budget_mean = budget_kl.mean()
+            budget_frac = act_mean / budget_mean if budget_mean > 0 else float("inf")
+
+            safe = budget_kl > 1e-8
+            per_image = act_kl[safe] / budget_kl[safe]
+
+            rows.append({
+                "category": cat,
+                "layer": layer,
+                "n_active": n_active,
+                "n_total": n_total,
+                "dir_frac": dir_frac,
+                "active_kl": act_mean,
+                "budget_kl": budget_mean,
+                "budget_frac": budget_frac,
+                "efficiency": budget_frac / dir_frac if dir_frac > 0 else float("inf"),
+                "spoofing_ratio": zero_kl.mean() / global_kl.mean() if global_kl.mean() > 0 else float("inf"),
+                "per_image_median": np.median(per_image) if len(per_image) > 0 else float("nan"),
+                "per_image_q25": np.percentile(per_image, 25) if len(per_image) > 0 else float("nan"),
+                "per_image_q75": np.percentile(per_image, 75) if len(per_image) > 0 else float("nan"),
+            })
 
     return pd.DataFrame(rows)
