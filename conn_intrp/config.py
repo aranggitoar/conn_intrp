@@ -29,7 +29,34 @@ import torch
 
 @dataclass
 class DirectionalMaskingConfig:
-    """Run record for a single category's directional masking training."""
+    """
+    Run record for a single category's directional masking training.
+
+    :param category: Question category name
+    :type category: str
+    :param model: Model identifier
+    :type model: str
+    :param component: Connector layer/component name
+    :type component: str
+    :param optimizer: Optimizer used for training
+    :type optimizer: str
+    :param sparsity_coef: L1 regularization coefficient
+    :type sparsity_coef: float
+    :param lr: Learning rate
+    :type lr: float
+    :param epochs: Number of training epochs completed
+    :type epochs: int
+    :param step: Batch size used during training
+    :type step: int
+    :param kl_per_epoch: Mean KL divergence per epoch
+    :type kl_per_epoch: list
+    :param l1_per_epoch: Mean L1 penalty per epoch
+    :type l1_per_epoch: list
+    :param below_half_per_epoch: Count of mask weights below 0.5 per epoch
+    :type below_half_per_epoch: list
+    :param near_zero_per_epoch: Count of mask weights below 0.05 per epoch
+    :type near_zero_per_epoch: list
+    """
 
     category: str
     model: str
@@ -49,10 +76,12 @@ def save_dm_run(config: DirectionalMaskingConfig, mask: torch.Tensor) -> None:
     """
     Save mask weights and append a row to the experiment log CSV.
 
-    :param config: Run record with hyperparameters and per-epoch stats.
+    :param config: Run record with hyperparameters and per-epoch stats
     :type config: DirectionalMaskingConfig
-    :param mask: Learned mask tensor to persist.
+    :param mask: Learned mask tensor to persist
     :type mask: torch.Tensor
+    :returns: None
+    :rtype: None
     """
     run_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     Path("./weights").mkdir(parents=True, exist_ok=True)

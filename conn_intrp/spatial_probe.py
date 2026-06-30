@@ -67,7 +67,7 @@ def run_spatial_probe(
     :param run_dir: Output directory for this run.
     :type run_dir: Path
     """
-    svd_info = {l.name: l for l in adapter.svd_layers}
+    svd_info = {sl.name: sl for sl in adapter.svd_layers}
     if isinstance(directions, list):
         directions = {
             name: [d for d in directions if d < layer.n_dirs] for name, layer in svd_info.items()
@@ -100,13 +100,13 @@ def run_spatial_probe(
             print(f'  Skipping "{name}" (projections exist)')
             continue
 
-        length = len(data)
+        n_images = len(data)
         projections: dict[str, list[torch.Tensor]] = {}
         image_files: list[str] = []
 
         for i in tqdm(
-            range(0, length, batch_size),
-            total=math.ceil(length / batch_size),
+            range(0, n_images, batch_size),
+            total=math.ceil(n_images / batch_size),
             desc=f'"{name}"',
         ):
             batch = data[i : i + batch_size]
@@ -134,7 +134,7 @@ def run_spatial_probe(
             cat_dir / "probe_meta.json",
             {
                 "category": name,
-                "n_images": length,
+                "n_images": n_images,
                 "grid_size": grid_size,
                 "layers": {
                     ln: {

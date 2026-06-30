@@ -29,7 +29,13 @@ import torch
 
 
 def fs_safe(name: str) -> str:
-    """Replace path separators so *name* is safe as a single path component."""
+    """Replace path separators so *name* is safe as a single path component.
+
+    :param name: Raw name that may contain ``/`` characters.
+    :type name: str
+    :returns: Sanitised string safe for use as a filename component.
+    :rtype: str
+    """
     return name.replace("/", "_")
 
 
@@ -145,6 +151,7 @@ def save_json(path: str | Path, data: dict) -> None:
 
 
 def _make_serializable(obj):
+    """Recursively convert non-JSON-serializable types to JSON-safe equivalents."""
     if isinstance(obj, dict):
         return {str(k): _make_serializable(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
@@ -219,6 +226,8 @@ def track_mem(label: str):
     :param label: Description printed alongside the peak memory.
     :type label: str
     """
-    torch.cuda.reset_peak_memory_stats()
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
     yield
-    print(f"{label}: {torch.cuda.max_memory_allocated() / 1024**3:.2f} GiB peak")
+    if torch.cuda.is_available():
+        print(f"{label}: {torch.cuda.max_memory_allocated() / 1024**3:.2f} GiB peak")

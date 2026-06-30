@@ -3,8 +3,27 @@ Mechanistic interpretability of cross-modal connectors in VLMs.
 
 Pipeline phases:
   1. Directional masking — learn per-direction importance masks
-  2. Mean ablation — replace directions with mean, measure ANLS + Δlogit
+  2. Mean ablation — replace directions with mean, measure ANLS + delta-logit
   3. Spatial probe — visualize direction activation patterns
+
+Example::
+
+    >>> from conn_intrp import load_dm_masks, load_ablation, run_spatial_probe
+    >>> masks = load_dm_masks("outputs/internvl3_5_dm_20260617_133647")
+    >>> abl = load_ablation("outputs/internvl3_5_ablation_20260624_025712")
+
+Main Functions:
+    run_dm: Train directional masks via gradient optimization
+    run_ablation: Single-direction mean ablation with delta-logit recording
+    run_joint_ablation: Joint ablation of direction sets (active vs random)
+    run_total_ablation: Zero/global-mean ablation of all directions (KL budget)
+    run_spatial_probe: Per-direction spatial activation heatmaps
+    load_dm_masks: Load mask tensors from a DM run directory
+    load_ablation: Load ablation results from a run directory
+    joint_kl_table: Active vs random KL summary per category
+    baseline_comparison: Zero vs cat-mean vs global-mean vs random KL
+    cumulative_kl: Per-direction KL sorted by DM weight
+    super_additivity: Joint vs sum-of-individual KL ratios
 """
 
 from .ablation import (
@@ -13,6 +32,7 @@ from .ablation import (
     load_category_coefficients,
     run_ablation,
     run_joint_ablation,
+    run_total_ablation,
 )
 from .ablation_analysis import (
     baseline_comparison,
@@ -32,6 +52,7 @@ from .dm_analysis import (
     compare_categories,
     direction_profile,
     distribution,
+    gap_survivors,
     jaccard_matrix,
     load_dm_masks,
     mask_agreement,
@@ -54,33 +75,31 @@ from .output import (
 from .spatial_probe import plot_probe_heatmap, run_spatial_probe, save_probe_heatmaps
 
 __all__ = [
+    # config
     "DirectionalMaskingConfig",
+    # data
     "load_docvqa",
     "HARNESS_PROMPT",
     "best_anls",
     "relaxed_anls",
     "filter_categories",
+    # output
     "make_run_dir",
     "find_latest_run",
     "save_json",
     "update_metadata",
     "save_checkpoint",
     "load_checkpoint",
+    # directional masking
     "run_dm",
     "evaluate_mask_kl",
     "evaluate_masks_kl",
     "evaluate_dm_baselines",
-    "compute_category_means",
-    "load_all_coefficients",
-    "load_category_coefficients",
-    "run_ablation",
-    "run_joint_ablation",
-    "run_spatial_probe",
-    "plot_probe_heatmap",
-    "save_probe_heatmaps",
+    # dm analysis
     "load_dm_masks",
     "summary_table",
     "survivors",
+    "gap_survivors",
     "ranked_directions",
     "distribution",
     "overlap_matrix",
@@ -91,7 +110,14 @@ __all__ = [
     "random_continuous_masks",
     "random_mask",
     "mask_agreement",
-    "linear_cka",
+    # ablation
+    "compute_category_means",
+    "load_all_coefficients",
+    "load_category_coefficients",
+    "run_ablation",
+    "run_joint_ablation",
+    "run_total_ablation",
+    # ablation analysis
     "load_ablation",
     "joint_kl_table",
     "baseline_comparison",
@@ -100,4 +126,10 @@ __all__ = [
     "topk_botk_summary",
     "super_additivity",
     "most_changed_directions",
+    # spatial probe
+    "run_spatial_probe",
+    "plot_probe_heatmap",
+    "save_probe_heatmaps",
+    # cka
+    "linear_cka",
 ]

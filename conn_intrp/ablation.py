@@ -27,6 +27,7 @@ Main Functions:
     load_category_coefficients: Load one category's coefficients from checkpoint.
     run_ablation: Per-direction ablation with ANLS scoring and Δlogit extraction.
     run_joint_ablation: Multi-direction set ablation for validating DM masks.
+    run_total_ablation: Zero/global-mean ablation of all directions for total KL budget.
 """
 
 import math
@@ -48,12 +49,91 @@ from .output import (
     update_metadata,
 )
 
+_BASELINE_KEYS = ("cat", "global", "zero", "rand")
+
+_DELTA_SCHEMA = {
+    "_note": "* is one of: cat, global, zero, rand (ablation baseline). "
+    "Keyed by {layer: {dir_idx: {field: tensor}}}",
+    "signed_mean_*": "(vocab_size,) mean logit delta across images",
+    "abs_mean_*": "(vocab_size,) mean |logit delta| across images",
+    "topk_*": "(n_images, 4, K) top-K positive logit shifts; "
+    "channels: [token_idx, logit_delta, prob_orig, prob_ablated]",
+    "botk_*": "(n_images, 4, K) top-K negative logit shifts; "
+    "channels: [token_idx, logit_delta, prob_orig, prob_ablated]",
+    "kl_div_*": "(n_images,) per-image KL divergence",
+    "delta_gold_prob_*": "(n_images,) per-image gold token log-prob change",
+}
+
+_JOINT_DELTA_SCHEMA = {
+    "_note": "* is one of: cat, global, zero, rand (ablation baseline). "
+    "Keyed by {set_label: {layer: {field: tensor}}}",
+    "signed_mean_*": "(vocab_size,) mean logit delta across images",
+    "abs_mean_*": "(vocab_size,) mean |logit delta| across images",
+    "topk_*": "(n_images, 4, K) top-K positive logit shifts; "
+    "channels: [token_idx, logit_delta, prob_orig, prob_ablated]",
+    "botk_*": "(n_images, 4, K) top-K negative logit shifts; "
+    "channels: [token_idx, logit_delta, prob_orig, prob_ablated]",
+}
+
+_ANLS_SUMMARY_SCHEMA = {
+    "_note": "Per-direction single ablation results. "
+    "anls_ablated_* is {layer: [per_dir_mean_anls]}. "
+    "* is one of: per_category_mean, global_mean, zero_mean, random",
+    "category": "str — category name",
+    "n_samples": "int — number of images evaluated",
+    "directions": "{layer: [dir_indices]} — directions ablated per layer",
+    "anls_original": "float — mean ANLS without ablation",
+    "anls_ablated_*": "{layer: [float]} — per-direction mean ANLS",
+}
+
+_JOINT_ANLS_SUMMARY_SCHEMA = {
+    "_note": "Joint ablation results. * suffix is one of: cat, global, zero, rand. "
+    "Keyed by sets → {set_label} → {layer}",
+    "category": "str — category name",
+    "n_samples": "int — number of images evaluated",
+    "anls_original": "float — mean ANLS without ablation",
+    "sets.{set_label}.{layer}.directions": "list[int] — direction indices in this set",
+    "sets.{set_label}.{layer}.n_directions": "int — count of directions",
+    "sets.{set_label}.{layer}.anls_*": "float — mean ANLS across images",
+    "sets.{set_label}.{layer}.kl_*": "list[float] — per-image KL divergence (length = n_samples)",
+    "sets.{set_label}.{layer}.delta_gold_prob_*": "list[float] — per-image gold log-prob change",
+}
+
+_TOTAL_ABLATION_SCHEMA = {
+    "_note": "Total ablation of all directions in a layer. "
+    "Gives the KL budget (upper bound) for interpreting partial ablation results",
+    "category": "str — category name",
+    "n_samples": "int — number of images evaluated",
+    "n_directions": "{layer: int} — total direction count per layer",
+    "anls_original": "float — mean ANLS without ablation",
+    "layers.{layer}.kl_zero": "list[float] — per-image KL from zero ablation",
+    "layers.{layer}.kl_global": "list[float] — per-image KL from global-mean ablation",
+    "layers.{layer}.anls_zero": "float — mean ANLS after zero ablation",
+    "layers.{layer}.anls_global": "float — mean ANLS after global-mean ablation",
+    "layers.{layer}.delta_gold_prob_zero": "list[float] — per-image gold log-prob change (zero)",
+    "layers.{layer}.delta_gold_prob_global": "list[float] — per-image gold log-prob change (global)",
+}
+
+
+def _make_accumulators(n_tasks: int, vocab_size: int) -> dict:
+    """Create per-baseline accumulators for ablation metrics."""
+    return {
+        "nls": [[] for _ in range(n_tasks)],
+        "delta_sum": [torch.zeros(vocab_size) for _ in range(n_tasks)],
+        "delta_abs_sum": [torch.zeros(vocab_size) for _ in range(n_tasks)],
+        "topk": [[] for _ in range(n_tasks)],
+        "botk": [[] for _ in range(n_tasks)],
+        "kl_div": [[] for _ in range(n_tasks)],
+        "delta_gold_prob": [[] for _ in range(n_tasks)],
+    }
+
 
 def _load_ckpt_compat(ckpt: dict, component_name: str) -> tuple[
     dict[str, torch.Tensor] | None,
     dict[str, torch.Tensor],
     dict[str, torch.Tensor] | None,
 ]:
+    """Normalize checkpoint format across versions, returning (coefficients, a_star, global_mean_contrib)."""
     raw_coeff = ckpt.get("coefficients")
     raw_astar = ckpt["a_star"]
     if isinstance(raw_coeff, torch.Tensor):
@@ -74,13 +154,13 @@ def load_all_coefficients(
     """
     Load all categories' per-layer SVD coefficients from checkpoints.
 
-    :param run_dir: Directory containing category checkpoints.
+    :param run_dir: Directory containing category checkpoints
     :type run_dir: Path
-    :param category_names: Category names to load.
+    :param category_names: Category names to load
     :type category_names: list[str]
-    :param component_name: Adapter's ``component_name`` for old-format compat.
+    :param component_name: Adapter's ``component_name`` for old-format compat
     :type component_name: str
-    :returns: ``{category: {layer_name: Tensor}}`` on CPU.
+    :returns: ``{category: {layer_name: Tensor}}`` on CPU
     :rtype: dict[str, dict[str, torch.Tensor]]
     """
     return {
@@ -96,13 +176,13 @@ def load_category_coefficients(
     """
     Load one category's per-layer SVD coefficients from checkpoint.
 
-    :param run_dir: Directory containing category checkpoints.
+    :param run_dir: Directory containing category checkpoints
     :type run_dir: Path
-    :param category_name: Category name (will be fs-safe'd).
+    :param category_name: Category name (will be fs-safe'd)
     :type category_name: str
-    :param component_name: Adapter's ``component_name`` for old-format compat.
+    :param component_name: Adapter's ``component_name`` for old-format compat
     :type component_name: str
-    :returns: ``{layer_name: Tensor}`` on CPU.
+    :returns: ``{layer_name: Tensor}`` on CPU
     :rtype: dict[str, torch.Tensor]
     """
     ckpt = load_checkpoint(run_dir, category_name)
@@ -142,21 +222,21 @@ def compute_category_means(
     checkpoints). Use :func:`load_category_coefficients` or
     :func:`load_all_coefficients` to load coefficients on demand.
 
-    :param adapter: Model adapter instance.
+    :param adapter: Model adapter instance
     :type adapter: ModelAdapter
-    :param data_categorized: Map of category name to list of data dicts.
+    :param data_categorized: Map of category name to list of data dicts
     :type data_categorized: dict[str, list]
-    :param batch_size: Number of images per forward pass.
+    :param batch_size: Number of images per forward pass
     :type batch_size: int
-    :param image_base_path: Root directory for image files.
+    :param image_base_path: Root directory for image files
     :type image_base_path: Path
-    :param run_dir: Output directory for this run.
+    :param run_dir: Output directory for this run
     :type run_dir: Path
     :param save_coefficients: Whether to include raw coefficient tensors
-        in checkpoints. Default True.
+        in checkpoints. Default True
     :type save_coefficients: bool
     :returns: ``(per_category_a_star, global_a_star)`` where means are
-        ``{cat: {layer: Tensor}}`` / ``{layer: Tensor}`` on CUDA.
+        ``{cat: {layer: Tensor}}`` / ``{layer: Tensor}`` on CUDA
     :rtype: tuple[dict[str, dict[str, torch.Tensor]],
         dict[str, torch.Tensor]]
     """
@@ -346,35 +426,51 @@ def run_ablation(
     connector layers, generates, scores ANLS, and extracts first-token Δlogit
     artifacts.
 
-    :param adapter: Model adapter instance.
+    Saves per category in ``run_dir/{category}/``:
+
+    ``anls_summary.json`` (schema: :data:`_ANLS_SUMMARY_SCHEMA`)
+        Per-direction ANLS scores aggregated across images, one entry per
+        layer per baseline.
+
+    ``delta_logits.pt`` (schema: :data:`_DELTA_SCHEMA`)
+        ``{layer: {dir_idx: {metric: tensor}}}``. Mean logit deltas,
+        top-K/bottom-K shifts, KL divergence, and gold prob change.
+
+    ``nls_original.npy``
+        ``(n_samples,)`` per-image ANLS scores without ablation.
+
+    ``nls_ablated_{baseline}.npy``
+        ``{layer: [[per_image_anls_per_dir]]}`` raw ANLS scores.
+
+    :param adapter: Model adapter instance
     :type adapter: ModelAdapter
-    :param data_categorized: Map of category name to list of data dicts.
+    :param data_categorized: Map of category name to list of data dicts
     :type data_categorized: dict[str, list]
     :param per_category_a_star: Per-layer category means (CUDA),
-        ``{cat: {layer: Tensor}}``.
+        ``{cat: {layer: Tensor}}``
     :type per_category_a_star: dict[str, dict[str, torch.Tensor]]
-    :param global_a_star: Per-layer global means (CUDA), ``{layer: Tensor}``.
+    :param global_a_star: Per-layer global means (CUDA), ``{layer: Tensor}``
     :type global_a_star: dict[str, torch.Tensor]
     :param directions_to_ablate: Per-layer direction indices,
-        ``{layer: [dir_indices]}``.
+        ``{layer: [dir_indices]}``
     :type directions_to_ablate: dict[str, list[int]]
-    :param batch_size: Number of images per forward pass.
+    :param batch_size: Number of images per forward pass
     :type batch_size: int
-    :param K: Number of top/bottom tokens to keep per image.
+    :param K: Number of top/bottom tokens to keep per image
     :type K: int
-    :param image_base_path: Root directory for image files.
+    :param image_base_path: Root directory for image files
     :type image_base_path: Path
-    :param run_dir: Output directory for this run.
+    :param run_dir: Output directory for this run
     :type run_dir: Path
     :param coefficients_dir: Directory containing per-category coefficient
-        checkpoints (from :func:`compute_category_means`).
+        checkpoints (from :func:`compute_category_means`)
     :type coefficients_dir: Path
-    :param rand_seed: Seed for the random baseline generator.
+    :param rand_seed: Seed for the random baseline generator
     :type rand_seed: int
     """
     svd_layer_map = {l.name: l for l in adapter.svd_layers}
 
-    tasks = [(ln, j, d) for ln, dirs in directions_to_ablate.items() for j, d in enumerate(dirs)]
+    tasks = [(ln, d) for ln, dirs in directions_to_ablate.items() for d in dirs]
     n_tasks = len(tasks)
 
     update_metadata(
@@ -411,39 +507,11 @@ def run_ablation(
         cat_std = {ln: cat_coefficients[ln].float().std(dim=(0, 1)) for ln in directions_to_ablate}
         rand_gen = torch.Generator().manual_seed(rand_seed)
 
-        nls_ablated_cat = [[] for _ in range(n_tasks)]
-        nls_ablated_global = [[] for _ in range(n_tasks)]
-        nls_ablated_zero = [[] for _ in range(n_tasks)]
-        nls_ablated_rand = [[] for _ in range(n_tasks)]
+        acc = {
+            bl: _make_accumulators(n_tasks, adapter.vocab_size)
+            for bl in _BASELINE_KEYS
+        }
         nls_original = []
-
-        delta_sum_cat = [torch.zeros(adapter.vocab_size) for _ in range(n_tasks)]
-        delta_abs_sum_cat = [torch.zeros(adapter.vocab_size) for _ in range(n_tasks)]
-        delta_sum_global = [torch.zeros(adapter.vocab_size) for _ in range(n_tasks)]
-        delta_abs_sum_global = [torch.zeros(adapter.vocab_size) for _ in range(n_tasks)]
-        delta_sum_zero = [torch.zeros(adapter.vocab_size) for _ in range(n_tasks)]
-        delta_abs_sum_zero = [torch.zeros(adapter.vocab_size) for _ in range(n_tasks)]
-        delta_sum_rand = [torch.zeros(adapter.vocab_size) for _ in range(n_tasks)]
-        delta_abs_sum_rand = [torch.zeros(adapter.vocab_size) for _ in range(n_tasks)]
-
-        topk_cat = [[] for _ in range(n_tasks)]
-        botk_cat = [[] for _ in range(n_tasks)]
-        topk_global = [[] for _ in range(n_tasks)]
-        botk_global = [[] for _ in range(n_tasks)]
-        topk_zero = [[] for _ in range(n_tasks)]
-        botk_zero = [[] for _ in range(n_tasks)]
-        topk_rand = [[] for _ in range(n_tasks)]
-        botk_rand = [[] for _ in range(n_tasks)]
-
-        kl_div_cat = [[] for _ in range(n_tasks)]
-        kl_div_global = [[] for _ in range(n_tasks)]
-        kl_div_zero = [[] for _ in range(n_tasks)]
-        kl_div_rand = [[] for _ in range(n_tasks)]
-
-        delta_gold_prob_cat = [[] for _ in range(n_tasks)]
-        delta_gold_prob_global = [[] for _ in range(n_tasks)]
-        delta_gold_prob_zero = [[] for _ in range(n_tasks)]
-        delta_gold_prob_rand = [[] for _ in range(n_tasks)]
 
         for i in tqdm(
             range(0, length, batch_size),
@@ -497,7 +565,7 @@ def run_ablation(
             lp_orig = log_probs_orig[range(actual), gold_idx]
             stacked_attn = attention_mask.repeat(4, 1)
 
-            for t_idx, (layer_name, j, dir_idx) in enumerate(tasks):
+            for t_idx, (layer_name, dir_idx) in enumerate(tasks):
                 layer = svd_layer_map[layer_name]
                 u_d = layer.U[:, dir_idx].to(batch_coeffs[layer_name].dtype)
                 orig_d = batch_coeffs[layer_name][..., dir_idx]
@@ -540,109 +608,52 @@ def run_ablation(
                         stacked_embeds, stacked_attn
                     )
 
-                preds_cat = all_preds[:actual]
-                preds_global = all_preds[actual : 2 * actual]
-                preds_zero = all_preds[2 * actual : 3 * actual]
-                preds_rand = all_preds[3 * actual :]
-
-                logits_cat, logits_global, logits_zero, logits_rand = all_logits.split(actual)
-
-                delta_cat = (logits_orig - logits_cat).float()
-                delta_global = (logits_orig - logits_global).float()
-                delta_zero = (logits_orig - logits_zero).float()
-                delta_rand = (logits_orig - logits_rand).float()
-
                 all_log_probs = F.log_softmax(all_logits, dim=-1)
                 probs_orig_exp = probs_orig.repeat(4, 1)
                 kl_all = F.kl_div(all_log_probs, probs_orig_exp, reduction="none").sum(-1)
-                kl_c, kl_g, kl_z, kl_r = kl_all.split(actual)
-                kl_div_cat[t_idx].extend(kl_c.cpu().tolist())
-                kl_div_global[t_idx].extend(kl_g.cpu().tolist())
-                kl_div_zero[t_idx].extend(kl_z.cpu().tolist())
-                kl_div_rand[t_idx].extend(kl_r.cpu().tolist())
-
+                kl_parts = kl_all.split(actual)
                 gold_idx_exp = gold_idx.repeat(4)
                 all_lp = all_log_probs[range(4 * actual), gold_idx_exp]
-                lp_c, lp_g, lp_z, lp_r = all_lp.split(actual)
-                delta_gold_prob_cat[t_idx].extend((lp_orig - lp_c).cpu().tolist())
-                delta_gold_prob_global[t_idx].extend((lp_orig - lp_g).cpu().tolist())
-                delta_gold_prob_zero[t_idx].extend((lp_orig - lp_z).cpu().tolist())
-                delta_gold_prob_rand[t_idx].extend((lp_orig - lp_r).cpu().tolist())
+                lp_parts = all_lp.split(actual)
 
-                delta_sum_cat[t_idx] += delta_cat.sum(dim=0).cpu()
-                delta_abs_sum_cat[t_idx] += delta_cat.abs().sum(dim=0).cpu()
-                delta_sum_global[t_idx] += delta_global.sum(dim=0).cpu()
-                delta_abs_sum_global[t_idx] += delta_global.abs().sum(dim=0).cpu()
-                delta_sum_zero[t_idx] += delta_zero.sum(dim=0).cpu()
-                delta_abs_sum_zero[t_idx] += delta_zero.abs().sum(dim=0).cpu()
-                delta_sum_rand[t_idx] += delta_rand.sum(dim=0).cpu()
-                delta_abs_sum_rand[t_idx] += delta_rand.abs().sum(dim=0).cpu()
+                logits_parts = all_logits.split(actual)
+                deltas = {
+                    bl: (logits_orig - logits_parts[bi]).float()
+                    for bi, bl in enumerate(_BASELINE_KEYS)
+                }
+                preds_parts = [
+                    all_preds[:actual],
+                    all_preds[actual : 2 * actual],
+                    all_preds[2 * actual : 3 * actual],
+                    all_preds[3 * actual :],
+                ]
 
-                probs_cat = F.softmax(logits_cat, dim=-1)
-                probs_global = F.softmax(logits_global, dim=-1)
-                probs_zero = F.softmax(logits_zero, dim=-1)
-                probs_rand = F.softmax(logits_rand, dim=-1)
+                for bi, bl in enumerate(_BASELINE_KEYS):
+                    a = acc[bl]
+                    delta = deltas[bl]
+                    a["kl_div"][t_idx].extend(kl_parts[bi].cpu().tolist())
+                    a["delta_gold_prob"][t_idx].extend(
+                        (lp_orig - lp_parts[bi]).cpu().tolist()
+                    )
+                    a["delta_sum"][t_idx] += delta.sum(dim=0).cpu()
+                    a["delta_abs_sum"][t_idx] += delta.abs().sum(dim=0).cpu()
 
-                top_v, top_i = delta_cat.topk(K, dim=-1)
-                bot_v, bot_i = (-delta_cat).topk(K, dim=-1)
-                top_p_orig = probs_orig.gather(-1, top_i.long())
-                bot_p_orig = probs_orig.gather(-1, bot_i.long())
-                top_p_cat = probs_cat.gather(-1, top_i.long())
-                bot_p_cat = probs_cat.gather(-1, bot_i.long())
-                topk_cat[t_idx].append(
-                    torch.stack([top_i, top_v, top_p_orig, top_p_cat], dim=1).cpu()
-                )
-                botk_cat[t_idx].append(
-                    torch.stack([bot_i, bot_v, bot_p_orig, bot_p_cat], dim=1).cpu()
-                )
+                    probs_abl = F.softmax(logits_parts[bi], dim=-1)
+                    top_v, top_i = delta.topk(K, dim=-1)
+                    bot_v, bot_i = (-delta).topk(K, dim=-1)
+                    top_p_orig = probs_orig.gather(-1, top_i.long())
+                    bot_p_orig = probs_orig.gather(-1, bot_i.long())
+                    top_p_abl = probs_abl.gather(-1, top_i.long())
+                    bot_p_abl = probs_abl.gather(-1, bot_i.long())
+                    a["topk"][t_idx].append(
+                        torch.stack([top_i, top_v, top_p_orig, top_p_abl], dim=1).cpu()
+                    )
+                    a["botk"][t_idx].append(
+                        torch.stack([bot_i, bot_v, bot_p_orig, bot_p_abl], dim=1).cpu()
+                    )
 
-                top_v, top_i = delta_global.topk(K, dim=-1)
-                bot_v, bot_i = (-delta_global).topk(K, dim=-1)
-                top_p_orig = probs_orig.gather(-1, top_i.long())
-                bot_p_orig = probs_orig.gather(-1, bot_i.long())
-                top_p_global = probs_global.gather(-1, top_i.long())
-                bot_p_global = probs_global.gather(-1, bot_i.long())
-                topk_global[t_idx].append(
-                    torch.stack([top_i, top_v, top_p_orig, top_p_global], dim=1).cpu()
-                )
-                botk_global[t_idx].append(
-                    torch.stack([bot_i, bot_v, bot_p_orig, bot_p_global], dim=1).cpu()
-                )
-
-                top_v, top_i = delta_zero.topk(K, dim=-1)
-                bot_v, bot_i = (-delta_zero).topk(K, dim=-1)
-                top_p_orig = probs_orig.gather(-1, top_i.long())
-                bot_p_orig = probs_orig.gather(-1, bot_i.long())
-                top_p_zero = probs_zero.gather(-1, top_i.long())
-                bot_p_zero = probs_zero.gather(-1, bot_i.long())
-                topk_zero[t_idx].append(
-                    torch.stack([top_i, top_v, top_p_orig, top_p_zero], dim=1).cpu()
-                )
-                botk_zero[t_idx].append(
-                    torch.stack([bot_i, bot_v, bot_p_orig, bot_p_zero], dim=1).cpu()
-                )
-
-                top_v, top_i = delta_rand.topk(K, dim=-1)
-                bot_v, bot_i = (-delta_rand).topk(K, dim=-1)
-                top_p_orig = probs_orig.gather(-1, top_i.long())
-                bot_p_orig = probs_orig.gather(-1, bot_i.long())
-                top_p_rand = probs_rand.gather(-1, top_i.long())
-                bot_p_rand = probs_rand.gather(-1, bot_i.long())
-                topk_rand[t_idx].append(
-                    torch.stack([top_i, top_v, top_p_orig, top_p_rand], dim=1).cpu()
-                )
-                botk_rand[t_idx].append(
-                    torch.stack([bot_i, bot_v, bot_p_orig, bot_p_rand], dim=1).cpu()
-                )
-
-                for targets, pred in zip(targets_batch, preds_cat):
-                    nls_ablated_cat[t_idx].append(best_anls(pred, targets))
-                for targets, pred in zip(targets_batch, preds_global):
-                    nls_ablated_global[t_idx].append(best_anls(pred, targets))
-                for targets, pred in zip(targets_batch, preds_zero):
-                    nls_ablated_zero[t_idx].append(best_anls(pred, targets))
-                for targets, pred in zip(targets_batch, preds_rand):
-                    nls_ablated_rand[t_idx].append(best_anls(pred, targets))
+                    for targets, pred in zip(targets_batch, preds_parts[bi]):
+                        a["nls"][t_idx].append(best_anls(pred, targets))
 
         # --- Save per-category results ---
         cat_dir = run_dir / fs_safe(name)
@@ -652,7 +663,7 @@ def run_ablation(
 
         layer_delta = {}
         layer_nls = {}
-        for t_idx, (ln, j, dir_idx) in enumerate(tasks):
+        for t_idx, (ln, dir_idx) in enumerate(tasks):
             if ln not in layer_delta:
                 layer_delta[ln] = {}
                 layer_nls[ln] = {
@@ -662,84 +673,30 @@ def run_ablation(
                     "zero": [],
                     "rand": [],
                 }
-            layer_delta[ln][dir_idx] = {
-                "signed_mean_cat": delta_sum_cat[t_idx] / length,
-                "abs_mean_cat": delta_abs_sum_cat[t_idx] / length,
-                "topk_cat": torch.cat(topk_cat[t_idx], dim=0),
-                "botk_cat": torch.cat(botk_cat[t_idx], dim=0),
-                "kl_div_cat": kl_div_cat[t_idx],
-                "delta_gold_prob_cat": delta_gold_prob_cat[t_idx],
-                "signed_mean_global": delta_sum_global[t_idx] / length,
-                "abs_mean_global": delta_abs_sum_global[t_idx] / length,
-                "topk_global": torch.cat(topk_global[t_idx], dim=0),
-                "botk_global": torch.cat(botk_global[t_idx], dim=0),
-                "kl_div_global": kl_div_global[t_idx],
-                "delta_gold_prob_global": delta_gold_prob_global[t_idx],
-                "signed_mean_zero": delta_sum_zero[t_idx] / length,
-                "abs_mean_zero": delta_abs_sum_zero[t_idx] / length,
-                "topk_zero": torch.cat(topk_zero[t_idx], dim=0),
-                "botk_zero": torch.cat(botk_zero[t_idx], dim=0),
-                "kl_div_zero": kl_div_zero[t_idx],
-                "delta_gold_prob_zero": delta_gold_prob_zero[t_idx],
-                "signed_mean_rand": delta_sum_rand[t_idx] / length,
-                "abs_mean_rand": delta_abs_sum_rand[t_idx] / length,
-                "topk_rand": torch.cat(topk_rand[t_idx], dim=0),
-                "botk_rand": torch.cat(botk_rand[t_idx], dim=0),
-                "kl_div_rand": kl_div_rand[t_idx],
-                "delta_gold_prob_rand": delta_gold_prob_rand[t_idx],
-            }
+            d = {}
+            for bl in _BASELINE_KEYS:
+                a = acc[bl]
+                d[f"signed_mean_{bl}"] = a["delta_sum"][t_idx] / length
+                d[f"abs_mean_{bl}"] = a["delta_abs_sum"][t_idx] / length
+                d[f"topk_{bl}"] = torch.cat(a["topk"][t_idx], dim=0)
+                d[f"botk_{bl}"] = torch.cat(a["botk"][t_idx], dim=0)
+                d[f"kl_div_{bl}"] = a["kl_div"][t_idx]
+                d[f"delta_gold_prob_{bl}"] = a["delta_gold_prob"][t_idx]
+            layer_delta[ln][dir_idx] = d
             layer_nls[ln]["dirs"].append(dir_idx)
-            layer_nls[ln]["cat"].append(sum(nls_ablated_cat[t_idx]) / length)
-            layer_nls[ln]["global"].append(sum(nls_ablated_global[t_idx]) / length)
-            layer_nls[ln]["zero"].append(sum(nls_ablated_zero[t_idx]) / length)
-            layer_nls[ln]["rand"].append(sum(nls_ablated_rand[t_idx]) / length)
+            for bl in _BASELINE_KEYS:
+                layer_nls[ln][bl].append(sum(acc[bl]["nls"][t_idx]) / length)
 
-        np.save(
-            cat_dir / "nls_ablated_cat.npy",
-            {
-                ln: [nls_ablated_cat[t] for t, (l, _, _) in enumerate(tasks) if l == ln]
-                for ln in layer_nls
-            },
-            allow_pickle=True,
-        )
-        np.save(
-            cat_dir / "nls_ablated_global.npy",
-            {
-                ln: [nls_ablated_global[t] for t, (l, _, _) in enumerate(tasks) if l == ln]
-                for ln in layer_nls
-            },
-            allow_pickle=True,
-        )
-        np.save(
-            cat_dir / "nls_ablated_zero.npy",
-            {
-                ln: [nls_ablated_zero[t] for t, (l, _, _) in enumerate(tasks) if l == ln]
-                for ln in layer_nls
-            },
-            allow_pickle=True,
-        )
-        np.save(
-            cat_dir / "nls_ablated_rand.npy",
-            {
-                ln: [nls_ablated_rand[t] for t, (l, _, _) in enumerate(tasks) if l == ln]
-                for ln in layer_nls
-            },
-            allow_pickle=True,
-        )
+        for bl in _BASELINE_KEYS:
+            np.save(
+                cat_dir / f"nls_ablated_{bl}.npy",
+                {
+                    ln: [acc[bl]["nls"][t] for t, (l, _) in enumerate(tasks) if l == ln]
+                    for ln in layer_nls
+                },
+                allow_pickle=True,
+            )
 
-        _DELTA_SCHEMA = {
-            "signed_mean_*": "(vocab_size,) mean logit delta across images",
-            "abs_mean_*": "(vocab_size,) mean |logit delta| across images",
-            "topk_*": "(n_images, 4, K) top-K positive logit shifts; "
-            "channels: [token_idx, logit_delta, prob_orig, prob_ablated]",
-            "botk_*": "(n_images, 4, K) top-K negative logit shifts; "
-            "channels: [token_idx, logit_delta, prob_orig, prob_ablated]",
-            "kl_div_*": "(directions, n_images) KL divergence between original "
-            "and ablated logit vectors",
-            "delta_gold_prob_*": "(directions, n_images) difference between last "
-            "token's log probability of original and ablated "
-            "logit vectors",
-        }
         torch.save(
             {"_schema": _DELTA_SCHEMA, **layer_delta},
             cat_dir / "delta_logits.pt",
@@ -749,6 +706,7 @@ def run_ablation(
         save_json(
             cat_dir / "anls_summary.json",
             dict(
+                _schema=_ANLS_SUMMARY_SCHEMA,
                 category=name,
                 n_samples=length,
                 directions={ln: layer_nls[ln]["dirs"] for ln in layer_nls},
@@ -792,30 +750,40 @@ def run_joint_ablation(
     and measures the effect. Designed for comparing DM mask active sets
     against random controls.
 
-    :param adapter: Model adapter instance.
+    Saves per category in ``run_dir/{category}/``:
+
+    ``joint_anls_summary.json`` (schema: :data:`_JOINT_ANLS_SUMMARY_SCHEMA`)
+        Per-set, per-layer ANLS, KL, and gold prob change. KL and
+        delta_gold_prob are per-image lists; ANLS is a scalar mean.
+
+    ``joint_delta_logits.pt`` (schema: :data:`_JOINT_DELTA_SCHEMA`)
+        ``{set_label: {layer: {metric: tensor}}}``. Mean logit deltas and
+        top-K/bottom-K shifts per set per layer.
+
+    :param adapter: Model adapter instance
     :type adapter: ModelAdapter
-    :param data_categorized: Map of category name to list of data dicts.
+    :param data_categorized: Map of category name to list of data dicts
     :type data_categorized: dict[str, list]
     :param per_category_a_star: Per-layer category means (CUDA),
-        ``{cat: {layer: Tensor}}``.
+        ``{cat: {layer: Tensor}}``
     :type per_category_a_star: dict[str, dict[str, torch.Tensor]]
-    :param global_a_star: Per-layer global means (CUDA), ``{layer: Tensor}``.
+    :param global_a_star: Per-layer global means (CUDA), ``{layer: Tensor}``
     :type global_a_star: dict[str, torch.Tensor]
-    :param direction_sets: Per-set, per-category, per-layer direction indices.
-        ``{set_label: {category: {layer: [dir_indices]}}}``.
+    :param direction_sets: Per-set, per-category, per-layer direction indices
+        ``{set_label: {category: {layer: [dir_indices]}}}``
     :type direction_sets: dict[str, dict[str, dict[str, list[int]]]]
-    :param batch_size: Number of images per forward pass.
+    :param batch_size: Number of images per forward pass
     :type batch_size: int
-    :param K: Number of top/bottom tokens to keep per image.
+    :param K: Number of top/bottom tokens to keep per image
     :type K: int
-    :param image_base_path: Root directory for image files.
+    :param image_base_path: Root directory for image files
     :type image_base_path: Path
-    :param run_dir: Output directory for this run.
+    :param run_dir: Output directory for this run
     :type run_dir: Path
     :param coefficients_dir: Directory containing per-category coefficient
-        checkpoints (from :func:`compute_category_means`).
+        checkpoints (from :func:`compute_category_means`)
     :type coefficients_dir: Path
-    :param rand_seed: Seed for the random baseline generator.
+    :param rand_seed: Seed for the random baseline generator
     :type rand_seed: int
     """
     svd_layer_map = {l.name: l for l in adapter.svd_layers}
@@ -969,17 +937,17 @@ def run_joint_ablation(
                     )
 
                     with torch.no_grad():
-                        delta_cat = (cat_sub - orig_sub) @ U_sub.T
-                        delta_global = (global_sub - orig_sub) @ U_sub.T
-                        delta_zero = (-orig_sub) @ U_sub.T
-                        delta_rand = (rand_sub - orig_sub) @ U_sub.T
+                        conn_delta_cat = (cat_sub - orig_sub) @ U_sub.T
+                        conn_delta_global = (global_sub - orig_sub) @ U_sub.T
+                        conn_delta_zero = (-orig_sub) @ U_sub.T
+                        conn_delta_rand = (rand_sub - orig_sub) @ U_sub.T
 
                         stacked_l = torch.cat(
                             [
-                                l_out + delta_cat,
-                                l_out + delta_global,
-                                l_out + delta_zero,
-                                l_out + delta_rand,
+                                l_out + conn_delta_cat,
+                                l_out + conn_delta_global,
+                                l_out + conn_delta_zero,
+                                l_out + conn_delta_rand,
                             ],
                             dim=0,
                         )
@@ -1074,6 +1042,7 @@ def run_joint_ablation(
 
         anls_orig = sum(nls_original) / length
         summary: dict = {
+            "_schema": _JOINT_ANLS_SUMMARY_SCHEMA,
             "category": name,
             "n_samples": length,
             "anls_original": anls_orig,
@@ -1144,7 +1113,7 @@ def run_joint_ablation(
                         torch.cat(res["botk_rand"], dim=0) if res["botk_rand"] else torch.empty(0)
                     ),
                 }
-        torch.save(delta_logits, cat_dir / "joint_delta_logits.pt")
+        torch.save({"_schema": _JOINT_DELTA_SCHEMA, **delta_logits}, cat_dir / "joint_delta_logits.pt")
 
         print(f"\n{name}: orig={anls_orig:.4f}")
         for sl in set_labels:
@@ -1156,3 +1125,223 @@ def run_joint_ablation(
                     f"  {sl}/{ln} ({n_dirs} dirs): "
                     f"anls_zero={anls_z:.4f}, mean_kl_zero={mean_kl:.4f}"
                 )
+
+
+def run_total_ablation(
+    adapter: ModelAdapter,
+    data_categorized: dict[str, list],
+    global_a_star: dict[str, torch.Tensor],
+    *,
+    batch_size: int,
+    image_base_path: Path,
+    run_dir: Path,
+    coefficients_dir: Path,
+) -> None:
+    """
+    Zero and global-mean ablation of all directions to measure total KL budget.
+
+    For each layer, replaces every coefficient with zero or the global mean
+    and measures the resulting KL divergence. This gives the upper-bound KL
+    that partial ablation results (active sets, random controls) should be
+    interpreted against. Comparing zero vs global-mean KL reveals OOD
+    spoofing from zero ablation.
+
+    Saves per category in ``run_dir/{category}/``:
+
+    ``total_ablation.json`` (schema: :data:`_TOTAL_ABLATION_SCHEMA`)
+        Per-layer KL, ANLS, and gold prob change for zero and global-mean
+        ablation of all directions.
+
+    :param adapter: Model adapter instance
+    :type adapter: ModelAdapter
+    :param data_categorized: Map of category name to list of data dicts
+    :type data_categorized: dict[str, list]
+    :param global_a_star: Per-layer global means (CUDA), ``{layer: Tensor}``
+    :type global_a_star: dict[str, torch.Tensor]
+    :param batch_size: Number of images per forward pass
+    :type batch_size: int
+    :param image_base_path: Root directory for image files
+    :type image_base_path: Path
+    :param run_dir: Output directory for this run
+    :type run_dir: Path
+    :param coefficients_dir: Directory containing per-category coefficient
+        checkpoints (from :func:`compute_category_means`)
+    :type coefficients_dir: Path
+    """
+    update_metadata(
+        run_dir,
+        dict(
+            model=adapter.model_name,
+            experiment="total_ablation",
+            batch_size=batch_size,
+            n_categories=len(data_categorized),
+            category_sizes={n: len(d) for n, d in data_categorized.items()},
+        ),
+    )
+
+    completed = {
+        name
+        for name in data_categorized
+        if (run_dir / fs_safe(name) / "total_ablation.json").exists()
+    }
+    if completed:
+        print(f"Resuming total ablation: skipping {len(completed)} completed categories")
+
+    for name, data in tqdm(data_categorized.items(), desc="Total ablation"):
+        if name in completed:
+            print(f'  Skipping "{name}" (results exist)')
+            continue
+
+        length = len(data)
+        cat_coefficients = load_category_coefficients(
+            coefficients_dir, name, adapter.component_name
+        )
+
+        nls_original = []
+        layer_results: dict[str, dict] = {}
+        for layer in adapter.svd_layers:
+            layer_results[layer.name] = {
+                "kl_zero": [],
+                "kl_global": [],
+                "nls_zero": [],
+                "nls_global": [],
+                "dgp_zero": [],
+                "dgp_global": [],
+            }
+
+        for i in tqdm(
+            range(0, length, batch_size),
+            total=math.ceil(length / batch_size),
+            desc=f'"{name}"',
+        ):
+            batch = data[i : i + batch_size]
+            actual = len(batch)
+            targets_batch = [datum["answers"] for datum in batch]
+
+            inputs = adapter.preprocess(batch, image_base_path)
+            attention_mask = inputs["attention_mask"]
+            text_embeds = adapter.get_text_embeds(inputs)
+
+            batch_coeffs = {}
+            layer_outputs = {}
+            for layer in adapter.svd_layers:
+                coeff = cat_coefficients[layer.name][i : i + actual].to(
+                    dtype=adapter.compute_dtype, device="cuda"
+                )
+                batch_coeffs[layer.name] = coeff
+                out = coeff @ layer.U.T.to(coeff.dtype)
+                if layer.bias is not None:
+                    out = out + layer.bias.to(coeff.dtype)
+                layer_outputs[layer.name] = out
+
+            with torch.no_grad():
+                last_layer = adapter.svd_layers[-1]
+                conn_out_orig = layer_outputs[last_layer.name]
+                embeds_orig = adapter.merge_embeds(inputs, text_embeds, conn_out_orig)
+                preds_orig, logits_orig = adapter.generate_with_logits(
+                    embeds_orig, attention_mask
+                )
+
+            for targets, pred in zip(targets_batch, preds_orig):
+                nls_original.append(best_anls(pred, targets))
+
+            probs_orig = F.softmax(logits_orig, dim=-1)
+            log_probs_orig = F.log_softmax(logits_orig, dim=-1)
+            gold_tok = [
+                adapter.processor.tokenizer(targets[0], add_special_tokens=False)[
+                    "input_ids"
+                ][-1]
+                for targets in targets_batch
+            ]
+            gold_idx = torch.tensor(gold_tok, device=logits_orig.device)
+            lp_orig = log_probs_orig[range(actual), gold_idx]
+            stacked_attn = attention_mask.repeat(2, 1)
+
+            for layer in adapter.svd_layers:
+                ln = layer.name
+                l_out = layer_outputs[ln]
+                coeff = batch_coeffs[ln]
+
+                global_coeff = global_a_star[ln].expand_as(coeff)
+                conn_delta_zero = (-coeff) @ layer.U.T.to(coeff.dtype)
+                conn_delta_global = (global_coeff - coeff) @ layer.U.T.to(coeff.dtype)
+
+                with torch.no_grad():
+                    stacked_l = torch.cat(
+                        [l_out + conn_delta_zero, l_out + conn_delta_global], dim=0
+                    )
+                    stacked_conn = adapter.forward_connector_from(ln, stacked_l)
+                    conn_z, conn_g = stacked_conn.split(actual)
+
+                    stacked_embeds = torch.cat(
+                        [
+                            adapter.merge_embeds(inputs, text_embeds, conn_z),
+                            adapter.merge_embeds(inputs, text_embeds, conn_g),
+                        ],
+                        dim=0,
+                    )
+                    all_preds, all_logits = adapter.generate_with_logits(
+                        stacked_embeds, stacked_attn
+                    )
+
+                preds_zero = all_preds[:actual]
+                preds_global = all_preds[actual:]
+
+                for targets, pred in zip(targets_batch, preds_zero):
+                    layer_results[ln]["nls_zero"].append(best_anls(pred, targets))
+                for targets, pred in zip(targets_batch, preds_global):
+                    layer_results[ln]["nls_global"].append(best_anls(pred, targets))
+
+                all_log_probs = F.log_softmax(all_logits, dim=-1)
+                probs_orig_exp = probs_orig.repeat(2, 1)
+                kl_all = F.kl_div(all_log_probs, probs_orig_exp, reduction="none").sum(
+                    -1
+                )
+                kl_z, kl_g = kl_all.split(actual)
+                layer_results[ln]["kl_zero"].extend(kl_z.cpu().tolist())
+                layer_results[ln]["kl_global"].extend(kl_g.cpu().tolist())
+
+                gold_idx_exp = gold_idx.repeat(2)
+                all_lp = all_log_probs[range(2 * actual), gold_idx_exp]
+                lp_z, lp_g = all_lp.split(actual)
+                layer_results[ln]["dgp_zero"].extend((lp_orig - lp_z).cpu().tolist())
+                layer_results[ln]["dgp_global"].extend(
+                    (lp_orig - lp_g).cpu().tolist()
+                )
+
+        cat_dir = run_dir / fs_safe(name)
+        cat_dir.mkdir(parents=True, exist_ok=True)
+
+        anls_orig = sum(nls_original) / length
+        summary: dict = {
+            "_schema": _TOTAL_ABLATION_SCHEMA,
+            "category": name,
+            "n_samples": length,
+            "n_directions": {
+                ln: cat_coefficients[ln].shape[-1] for ln in layer_results
+            },
+            "anls_original": anls_orig,
+            "layers": {},
+        }
+        for ln, res in layer_results.items():
+            summary["layers"][ln] = {
+                "kl_zero": res["kl_zero"],
+                "kl_global": res["kl_global"],
+                "anls_zero": sum(res["nls_zero"]) / length,
+                "anls_global": sum(res["nls_global"]) / length,
+                "delta_gold_prob_zero": res["dgp_zero"],
+                "delta_gold_prob_global": res["dgp_global"],
+            }
+
+        save_json(cat_dir / "total_ablation.json", summary)
+
+        print(f"\n{name}: orig={anls_orig:.4f}")
+        for ln, res in layer_results.items():
+            mean_kl_z = sum(res["kl_zero"]) / length
+            mean_kl_g = sum(res["kl_global"]) / length
+            anls_z = sum(res["nls_zero"]) / length
+            anls_g = sum(res["nls_global"]) / length
+            print(
+                f"  {ln}: kl_zero={mean_kl_z:.4f}, kl_global={mean_kl_g:.4f}, "
+                f"anls_zero={anls_z:.4f}, anls_global={anls_g:.4f}"
+            )

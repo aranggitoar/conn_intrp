@@ -42,10 +42,10 @@ def linear_cka(
     Y = Y.float()
     X = X - X.mean(dim=0, keepdim=True)
     Y = Y - Y.mean(dim=0, keepdim=True)
-    YtX = Y.T @ X
-    hsic_xy = (YtX * YtX).sum()
-    XtX = X.T @ X
-    YtY = Y.T @ Y
-    hsic_xx = (XtX * XtX).sum()
-    hsic_yy = (YtY * YtY).sum()
+    gram_xy = Y.T @ X
+    hsic_xy = (gram_xy * gram_xy).sum()
+    gram_xx = X.T @ X
+    gram_yy = Y.T @ Y
+    hsic_xx = (gram_xx * gram_xx).sum()
+    hsic_yy = (gram_yy * gram_yy).sum()
     return (hsic_xy / (hsic_xx.sqrt() * hsic_yy.sqrt())).item()

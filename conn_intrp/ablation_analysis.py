@@ -12,17 +12,18 @@ Example::
     >>> cumulative_kl(abl, "figure_diagram")
 
 Main Functions:
-    load_ablation: Load all ablation results from a run directory.
-    joint_kl_table: Joint ablation KL summary across categories/thresholds.
-    baseline_comparison: Zero vs mean vs random KL per category.
-    cumulative_kl: Per-direction KL sorted by DM weight (coding regime curve).
-    gold_prob_summary: Gold log-prob change distribution per category.
-    topk_botk_summary: Aggregated top-K/bottom-K token shifts per category.
-    super_additivity: Joint vs sum-of-individual KL ratios (MLP connectors).
-    most_changed_directions: Directions with largest individual KL per category.
+    load_ablation: Load ablation results from a run directory
+    joint_kl_table: Active vs random KL summary across categories and thresholds
+    baseline_comparison: Zero vs cat-mean vs global-mean vs random KL per category
+    cumulative_kl: Per-direction KL sorted by DM weight for coding-regime comparison
+    gold_prob_summary: Gold log-prob change distribution per category
+    topk_botk_summary: Aggregated top-K/bottom-K token shifts per category
+    super_additivity: Joint vs sum-of-individual KL ratios
+    most_changed_directions: Directions with largest individual KL per category
 """
 
 import json
+from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -34,9 +35,11 @@ def load_ablation(run_dir: str | Path) -> dict:
     """
     Load all ablation results from a run directory.
 
-    :param run_dir: Path to the ablation output directory.
+    :param run_dir: Path to the ablation output directory
+    :type run_dir: str | Path
     :returns: ``{category: {"anls": dict, "joint": dict, "delta_logits": dict,
         "joint_delta_logits": dict}}``
+    :rtype: dict
     """
     run_dir = Path(run_dir)
     result = {}
@@ -47,10 +50,8 @@ def load_ablation(run_dir: str | Path) -> dict:
             continue
         cat = cat_dir.name
         entry = {}
-        anls_path = cat_dir / "anls_summary.json"
-        if anls_path.exists():
-            with open(anls_path) as f:
-                entry["anls"] = json.load(f)
+        with open(cat_dir / "anls_summary.json") as f:
+            entry["anls"] = json.load(f)
         joint_path = cat_dir / "joint_anls_summary.json"
         if joint_path.exists():
             with open(joint_path) as f:
@@ -66,6 +67,7 @@ def load_ablation(run_dir: str | Path) -> dict:
 
 
 def _layer_names(abl: dict) -> list[str]:
+    """Infer layer names from the first category's direction structure."""
     cat = next(iter(abl))
     dirs = abl[cat]["anls"]["directions"]
     if isinstance(dirs, dict):
@@ -74,6 +76,7 @@ def _layer_names(abl: dict) -> list[str]:
 
 
 def _direction_list(abl: dict, category: str) -> dict[str, list[int]]:
+    """Return ``{layer: [dir_indices]}`` for a category, wrapping flat lists under ``"proj"``."""
     dirs = abl[category]["anls"]["directions"]
     if isinstance(dirs, dict):
         return dirs
@@ -89,11 +92,15 @@ def joint_kl_table(
     """
     Joint ablation KL summary: active vs random per category.
 
-    :param abl: Output of :func:`load_ablation`.
-    :param threshold: Binarisation threshold.
-    :param baseline: Ablation baseline (``"cat"``, ``"global"``, ``"zero"``, ``"rand"``).
+    :param abl: Loaded ablation results, ``{category: {anls, joint, ...}}``
+    :type abl: dict
+    :param threshold: Binarisation threshold
+    :type threshold: float
+    :param baseline: Ablation baseline (``"cat"``, ``"global"``, ``"zero"``, ``"rand"``)
+    :type baseline: str
     :returns: DataFrame with columns: category, layer, n_dirs, active_kl,
-        random_kl, ratio.
+        random_kl, ratio
+    :rtype: pd.DataFrame
     """
     rows = []
     active_key = f"active_{threshold}"
@@ -130,11 +137,15 @@ def baseline_comparison(
     """
     Compare KL across ablation methods (zero, cat-mean, global-mean, random).
 
-    :param abl: Output of :func:`load_ablation`.
-    :param threshold: Binarisation threshold.
-    :param set_type: ``"active"`` or ``"random"``.
+    :param abl: Loaded ablation results, ``{category: {anls, joint, ...}}``
+    :type abl: dict
+    :param threshold: Binarisation threshold
+    :type threshold: float
+    :param set_type: ``"active"`` or ``"random"``
+    :type set_type: str
     :returns: DataFrame with columns: category, layer, kl_zero, kl_cat,
-        kl_global, kl_rand.
+        kl_global, kl_rand
+    :rtype: pd.DataFrame
     """
     rows = []
     set_key = f"{set_type}_{threshold}"
@@ -169,12 +180,17 @@ def cumulative_kl(
     When *dm_masks* is provided, directions are sorted by their mask
     weight for this category. Otherwise sorted by KL descending.
 
-    :param abl: Output of :func:`load_ablation`.
-    :param category: Category name.
-    :param baseline: Ablation baseline.
-    :param dm_masks: Output of ``dm_analysis.load_dm_masks``, optional.
+    :param abl: Loaded ablation results, ``{category: {anls, joint, ...}}``
+    :type abl: dict
+    :param category: Category name
+    :type category: str
+    :param baseline: Ablation baseline
+    :type baseline: str
+    :param dm_masks: DM mask weights, ``{layer: {category: tensor}}``, optional
+    :type dm_masks: dict | None
     :returns: DataFrame with columns: layer, direction, kl, mask_weight,
-        cumulative_kl, cumulative_frac.
+        cumulative_kl, cumulative_frac
+    :rtype: pd.DataFrame
     """
     dl = abl[category].get("delta_logits", {})
     layers = _layer_names(abl)
@@ -183,10 +199,7 @@ def cumulative_kl(
 
     rows = []
     for layer in layers:
-        if layer == "proj":
-            layer_dl = dl
-        else:
-            layer_dl = dl.get(layer, {})
+        layer_dl = _get_layer_dl(dl, layer)
 
         for d_idx in dir_list[layer]:
             d_data = layer_dl.get(d_idx, {})
@@ -234,13 +247,18 @@ def gold_prob_summary(
     """
     Gold log-prob change distribution per category.
 
-    :param abl: Output of :func:`load_ablation`.
-    :param baseline: Ablation baseline.
+    :param abl: Loaded ablation results, ``{category: {anls, joint, ...}}``
+    :type abl: dict
+    :param baseline: Ablation baseline
+    :type baseline: str
     :param level: ``"joint"`` for joint ablation, ``"individual"`` for
-        per-direction (returns median across directions).
-    :param threshold: Binarisation threshold (only for ``level="joint"``).
+        per-direction (returns median across directions)
+    :type level: str
+    :param threshold: Binarisation threshold (only for ``level="joint"``)
+    :type threshold: float
     :returns: DataFrame with columns: category, layer, mean, median, std,
-        q25, q75, min, max, n_images.
+        q25, q75, min, max, n_images
+    :rtype: pd.DataFrame
     """
     rows = []
     key = f"delta_gold_prob_{baseline}"
@@ -259,7 +277,7 @@ def gold_prob_summary(
             layers = _layer_names(abl)
             dir_list = _direction_list(abl, cat)
             for layer in layers:
-                layer_dl = dl if layer == "proj" else dl.get(layer, {})
+                layer_dl = _get_layer_dl(dl, layer)
                 all_medians = []
                 for d_idx in dir_list[layer]:
                     d_data = layer_dl.get(d_idx, {})
@@ -277,7 +295,13 @@ def gold_prob_summary(
     return pd.DataFrame(rows)
 
 
+def _get_layer_dl(dl: dict, layer: str) -> dict:
+    """Return the delta-logits sub-dict for a given layer."""
+    return dl if layer == "proj" else dl.get(layer, {})
+
+
 def _dist_row(cat: str, layer: str, vals: np.ndarray) -> dict:
+    """Build a distribution summary dict for one category-layer pair."""
     return {
         "category": cat,
         "layer": layer,
@@ -288,7 +312,7 @@ def _dist_row(cat: str, layer: str, vals: np.ndarray) -> dict:
         "q75": np.percentile(vals, 75),
         "min": vals.min(),
         "max": vals.max(),
-        "n": len(vals),
+        "n_images": len(vals),
     }
 
 
@@ -308,15 +332,22 @@ def topk_botk_summary(
     Counts how often each token appears in the top/bottom-K across images,
     with mean logit delta and mean probability change.
 
-    :param abl: Output of :func:`load_ablation`.
-    :param category: Category name.
-    :param baseline: Ablation baseline.
-    :param level: ``"joint"`` or ``"individual"``.
-    :param threshold: Binarisation threshold (joint only).
-    :param k: Number of top/bottom tokens to aggregate over.
-    :param tokenizer: HuggingFace tokenizer for decoding token IDs.
+    :param abl: Loaded ablation results, ``{category: {anls, joint, ...}}``
+    :type abl: dict
+    :param category: Category name
+    :type category: str
+    :param baseline: Ablation baseline
+    :type baseline: str
+    :param level: ``"joint"`` or ``"individual"``
+    :type level: str
+    :param threshold: Binarisation threshold (joint only)
+    :type threshold: float
+    :param k: Number of top/bottom tokens to aggregate over
+    :type k: int
+    :param tokenizer: HuggingFace tokenizer for decoding token IDs
     :returns: ``(topk_df, botk_df)`` each with columns: token_id, token,
-        count, mean_delta, mean_prob_orig, mean_prob_ablated.
+        count, mean_delta, mean_prob_orig, mean_prob_ablated
+    :rtype: tuple[pd.DataFrame, pd.DataFrame]
     """
     topk_key = f"topk_{baseline}"
     botk_key = f"botk_{baseline}"
@@ -330,7 +361,6 @@ def topk_botk_summary(
         prob_orig = tensor[:, 2, :K].reshape(-1).tolist()
         prob_abl = tensor[:, 3, :K].reshape(-1).tolist()
 
-        from collections import defaultdict
         acc = defaultdict(lambda: {"count": 0, "delta_sum": 0.0, "po_sum": 0.0, "pa_sum": 0.0})
         for tid, d, po, pa in zip(token_ids, deltas, prob_orig, prob_abl):
             acc[tid]["count"] += 1
@@ -360,7 +390,6 @@ def topk_botk_summary(
         layers = list(sets[set_key].keys())
         # Use last layer (most downstream)
         layer = layers[-1]
-        s = sets[set_key][layer]
         jdl = data["joint_delta_logits"][set_key][layer]
         top_df = _aggregate(jdl[topk_key])
         bot_df = _aggregate(jdl[botk_key])
@@ -402,11 +431,15 @@ def super_additivity(
     For each category and layer, compares the mean KL from joint ablation
     to the sum of per-direction mean KLs for the matched direction set.
 
-    :param abl: Output of :func:`load_ablation`.
-    :param threshold: Binarisation threshold.
-    :param baseline: Ablation baseline.
+    :param abl: Loaded ablation results, ``{category: {anls, joint, ...}}``
+    :type abl: dict
+    :param threshold: Binarisation threshold
+    :type threshold: float
+    :param baseline: Ablation baseline
+    :type baseline: str
     :returns: DataFrame with columns: category, layer, joint_kl,
-        sum_individual_kl, ratio, n_joint_dirs, n_matched_dirs.
+        sum_individual_kl, ratio, n_joint_dirs, n_matched_dirs
+    :rtype: pd.DataFrame
     """
     kl_key = f"kl_{baseline}"
     kl_div_key = f"kl_div_{baseline}"
@@ -463,10 +496,14 @@ def most_changed_directions(
     """
     Directions with the largest individual mean KL, per category.
 
-    :param abl: Output of :func:`load_ablation`.
-    :param baseline: Ablation baseline.
-    :param n: Number of top directions per category per layer.
-    :returns: DataFrame with columns: category, layer, direction, mean_kl, rank.
+    :param abl: Loaded ablation results, ``{category: {anls, joint, ...}}``
+    :type abl: dict
+    :param baseline: Ablation baseline
+    :type baseline: str
+    :param n: Number of top directions per category per layer
+    :type n: int
+    :returns: DataFrame with columns: category, layer, direction, mean_kl, rank
+    :rtype: pd.DataFrame
     """
     kl_key = f"kl_div_{baseline}"
     rows = []

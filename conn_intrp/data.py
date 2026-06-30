@@ -19,6 +19,8 @@ Main Functions:
 import json
 import random
 
+import rapidfuzz.distance
+
 HARNESS_PROMPT = (
     "NO repeat the words in the question, NO 'the answer is', "
     "NO 'the document type is', NO 'the address is', and other "
@@ -31,12 +33,12 @@ def load_docvqa(json_path: str, seed: int = 99) -> tuple[list, dict]:
     """
     Load and shuffle the DocVQA dataset, grouped by question category.
 
-    :param json_path: Path to the JSON annotation file.
+    :param json_path: Path to the JSON annotation file
     :type json_path: str
-    :param seed: Random seed for reproducible shuffling.
+    :param seed: Random seed for reproducible shuffling
     :type seed: int
     :returns: ``(all_data, categorized)`` where *categorized* maps
-        category name to a list of data dicts.
+        category name to a list of data dicts
     :rtype: tuple[list, dict]
     """
     with open(json_path) as f:
@@ -57,17 +59,15 @@ def relaxed_anls(pred: str, gt: str, tau: float = 0.5) -> float:
     """
     ANLS between a single prediction and ground truth.
 
-    :param pred: Model prediction string.
+    :param pred: Model prediction string
     :type pred: str
-    :param gt: Ground-truth answer string.
+    :param gt: Ground-truth answer string
     :type gt: str
-    :param tau: Threshold below which score is clamped to 0.
+    :param tau: Threshold below which score is clamped to 0
     :type tau: float
-    :returns: Score in [0, 1].
+    :returns: Score in [0, 1]
     :rtype: float
     """
-    import rapidfuzz.distance
-
     pred, gt = pred.strip().lower(), gt.strip().lower()
     if gt in pred:
         return 1.0
@@ -79,13 +79,13 @@ def best_anls(prediction: str, targets: list[str], tau: float = 0.5) -> float:
     """
     Best ANLS score across multiple ground-truth targets.
 
-    :param prediction: Model prediction string.
+    :param prediction: Model prediction string
     :type prediction: str
-    :param targets: List of acceptable ground-truth answers.
+    :param targets: List of acceptable ground-truth answers
     :type targets: list[str]
-    :param tau: Threshold passed to :func:`relaxed_anls`.
+    :param tau: Threshold passed to :func:`relaxed_anls`
     :type tau: float
-    :returns: Maximum score across all targets.
+    :returns: Maximum score across all targets
     :rtype: float
     """
     return max(relaxed_anls(prediction, t, tau) for t in targets)
@@ -100,13 +100,13 @@ def filter_categories(
     """
     Filter and/or truncate a categorized dataset.
 
-    :param data_categorized: Full category dict from :func:`load_docvqa`.
+    :param data_categorized: Mapping of category name to list of data dicts
     :type data_categorized: dict[str, list]
-    :param categories: Keep only these categories.  ``None`` keeps all.
+    :param categories: Keep only these categories.  ``None`` keeps all
     :type categories: list[str] | None
-    :param max_samples: Cap each category to at most this many samples.
+    :param max_samples: Cap each category to at most this many samples
     :type max_samples: int | None
-    :returns: Filtered copy of the dict (never mutates the original).
+    :returns: Filtered copy of the dict (never mutates the original)
     :rtype: dict[str, list]
     """
     out = data_categorized

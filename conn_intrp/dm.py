@@ -45,6 +45,7 @@ def _resolve_step(
     target_updates_per_epoch: int | None,
     max_step: int | None,
 ) -> int:
+    """Compute effective batch size from explicit step or target update count."""
     if step is not None:
         return step
     if target_updates_per_epoch is not None:
@@ -61,7 +62,21 @@ def _check_converged(
     patience: int,
     conv_threshold: float,
 ) -> bool:
-    """All layers' <0.5 and near-zero counts stable for *patience* epochs."""
+    """
+    All layers' <0.5 and near-zero counts stable for *patience* epochs.
+
+    :param stats: Per-layer tracking dict with ``below_half`` and
+        ``near_zero`` sequences
+    :type stats: dict
+    :param n_dirs: Total number of SVD directions per layer
+    :type n_dirs: int
+    :param patience: Number of consecutive stable epochs required
+    :type patience: int
+    :param conv_threshold: Fraction of *n_dirs* used as change tolerance
+    :type conv_threshold: float
+    :returns: ``True`` if all layers have converged
+    :rtype: bool
+    """
     threshold = max(1, int(n_dirs * conv_threshold))
     for ln, s in stats.items():
         for key in ("below_half", "near_zero"):
@@ -89,16 +104,16 @@ def evaluate_mask_kl(
     the mean KL(masked || original) per layer.  Use to compare an
     optimized mask against a random baseline.
 
-    :param adapter: Model adapter instance.
+    :param adapter: Model adapter instance
     :type adapter: ModelAdapter
-    :param data: List of data dicts (single category).
+    :param data: List of data dicts (single category)
     :type data: list
     :param mask_weights: ``{layer_name: mask_tensor}`` with values
-        in ``[0, 1]``, shape ``(n_dirs,)``.
+        in ``[0, 1]``, shape ``(n_dirs,)``
     :type mask_weights: dict[str, torch.Tensor]
-    :param step: Batch size.
+    :param step: Batch size
     :type step: int
-    :param image_base_path: Root directory for image files.
+    :param image_base_path: Root directory for image files
     :type image_base_path: Path
     :returns: ``{layer_name: mean_kl}``
     :rtype: dict[str, float]
@@ -131,22 +146,22 @@ def evaluate_masks_kl(
     *mask_batch* — each chunk stacks its masked embeddings and runs one
     batched decoder forward instead of one per mask.
 
-    :param adapter: Model adapter instance.
+    :param adapter: Model adapter instance
     :type adapter: ModelAdapter
-    :param data: List of data dicts (single category).
+    :param data: List of data dicts (single category)
     :type data: list
-    :param mask_sets: List of ``{layer_name: mask_tensor}`` dicts.
+    :param mask_sets: List of ``{layer_name: mask_tensor}`` dicts
     :type mask_sets: list[dict[str, torch.Tensor]]
-    :param step: Image batch size.
+    :param step: Image batch size
     :type step: int
     :param mask_batch: Max mask sets per decoder forward.  Total
-        sequences per forward = ``step × mask_batch``.
+        sequences per forward = ``step × mask_batch``
     :type mask_batch: int
-    :param image_base_path: Root directory for image files.
+    :param image_base_path: Root directory for image files
     :type image_base_path: Path
-    :param desc: Progress bar description.
+    :param desc: Progress bar description
     :type desc: str
-    :returns: One ``{layer_name: mean_kl}`` dict per mask set.
+    :returns: One ``{layer_name: mean_kl}`` dict per mask set
     :rtype: list[dict[str, float]]
     """
     layers = adapter.svd_layers
@@ -244,22 +259,22 @@ def evaluate_dm_baselines(
     and random baselines) using cached forward passes.  Results are
     saved incrementally to ``baseline_kl.json`` in *run_dir*.
 
-    :param adapter: Model adapter instance.
+    :param adapter: Model adapter instance
     :type adapter: ModelAdapter
-    :param data_categorized: Map of category name to list of data dicts.
+    :param data_categorized: Map of category name to list of data dicts
     :type data_categorized: dict[str, list]
-    :param step: Batch size for KL evaluation.
+    :param step: Batch size for KL evaluation
     :type step: int
     :param thresholds: Binarisation thresholds to sweep.  Defaults to
-        ``[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]``.
+        ``[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]``
     :type thresholds: list[float] | None
-    :param n_random_seeds: Number of random seeds to average over.
+    :param n_random_seeds: Number of random seeds to average over
     :type n_random_seeds: int
-    :param image_base_path: Root directory for image files.
+    :param image_base_path: Root directory for image files
     :type image_base_path: Path
-    :param run_dir: DM run output directory (must contain mask ``.pt`` files).
+    :param run_dir: DM run output directory (must contain mask ``.pt`` files)
     :type run_dir: Path
-    :returns: Full results dict (also saved to ``baseline_kl.json``).
+    :returns: Full results dict (also saved to ``baseline_kl.json``)
     :rtype: dict
     """
     if thresholds is None:
@@ -413,35 +428,35 @@ def run_dm(
       so each gets approximately that many gradient updates per epoch.
     - *max_step* caps the auto-computed step (GPU memory).
 
-    :param adapter: Model adapter instance.
+    :param adapter: Model adapter instance
     :type adapter: ModelAdapter
-    :param data_categorized: Map of category name to list of data dicts.
+    :param data_categorized: Map of category name to list of data dicts
     :type data_categorized: dict[str, list]
-    :param sparsity_coef: L1 regularization coefficient.
+    :param sparsity_coef: L1 regularization coefficient
     :type sparsity_coef: float
-    :param lr: SGD learning rate.
+    :param lr: SGD learning rate
     :type lr: float
-    :param epochs: Maximum training epochs per category.
+    :param epochs: Maximum training epochs per category
     :type epochs: int
     :param step: Fixed batch size for all categories.  Mutually exclusive
-        with *target_updates_per_epoch*; one of the two must be provided.
+        with *target_updates_per_epoch*; one of the two must be provided
     :type step: int | None
     :param target_updates_per_epoch: Desired gradient updates per epoch;
-        step is derived per category from ``round(n_images / target)``.
+        step is derived per category from ``round(n_images / target)``
     :type target_updates_per_epoch: int | None
-    :param max_step: Upper bound on the auto-computed step.
+    :param max_step: Upper bound on the auto-computed step
     :type max_step: int | None
     :param patience: Stop early when both the ``<0.5`` and near-zero
         (``<0.05``) counts change by less than *conv_threshold* of
         *n_dirs* for this many consecutive epochs.  Set to 0 to disable
-        early stopping.
+        early stopping
     :type patience: int
     :param conv_threshold: Fraction of *n_dirs* used as the convergence
-        threshold for early stopping.
+        threshold for early stopping
     :type conv_threshold: float
-    :param image_base_path: Root directory for image files.
+    :param image_base_path: Root directory for image files
     :type image_base_path: Path
-    :param run_dir: Output directory for this run.
+    :param run_dir: Output directory for this run
     :type run_dir: Path
     """
     if step is None and target_updates_per_epoch is None:
@@ -509,8 +524,10 @@ def run_dm(
 
         length = len(data)
         epoch_cache = [] if epochs > 1 else None
+        n_epochs = 0
 
         for ep in tqdm(range(epochs), desc=f'"{name}"'):
+            n_epochs += 1
             epoch_kl = {ln: 0.0 for ln in masks}
             epoch_l1 = {ln: 0.0 for ln in masks}
             n_steps = 0
@@ -525,7 +542,7 @@ def run_dm(
             ):
                 batch = data[i : i + cat_step]
                 image_keys = [d["image"] for d in batch]
-                all_vision_cached = cache_vision and all(
+                all_vision_cached = cache_vision and all(  # accesses adapter cache directly for perf
                     k in adapter._vision_cache for k in image_keys
                 )
 
@@ -624,7 +641,7 @@ def run_dm(
                 print(f'  "{name}" converged at epoch {ep + 1} ' f"(stable for {patience} epochs)")
                 break
 
-        actual_epochs = ep + 1
+        actual_epochs = n_epochs
         del epoch_cache
 
         for layer in layers:

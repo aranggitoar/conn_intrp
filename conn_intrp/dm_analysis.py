@@ -13,15 +13,15 @@ Example::
     >>> overlap_matrix(masks, "linear_2")
 
 Main Functions:
-    load_dm_masks: Load all mask tensors from a run directory.
-    summary_table: Per-layer, per-category stats as a DataFrame.
-    survivors: Direction indices above a threshold.
-    gap_survivors: Direction indices where a category leads by a minimum gap.
-    random_baseline_masks: Reproduce the exact random masks from evaluate_dm_baselines.
-    random_continuous_masks: Continuous uniform [0, 1] random masks for similarity baselines.
-    overlap_matrix: Category × category survivor overlap counts.
-    jaccard_matrix: Category × category Jaccard similarity.
-    distribution: Bucket breakdown of mask weights.
+    load_dm_masks: Load mask tensors from a DM run directory
+    summary_table: Per-layer, per-category survivor counts and weight statistics
+    survivors: Direction indices above a weight threshold
+    gap_survivors: Direction indices where one category leads by a minimum gap
+    random_baseline_masks: Binary random masks matching evaluate_dm_baselines RNG
+    random_continuous_masks: Continuous uniform [0, 1] random masks for similarity baselines
+    overlap_matrix: Category x category survivor intersection counts
+    jaccard_matrix: Category x category Jaccard similarity of survivor sets
+    distribution: Bucket breakdown of mask weight distribution
 """
 
 import json
@@ -33,11 +33,11 @@ import torch
 
 def load_dm_masks(run_dir: str | Path) -> dict[str, dict[str, torch.Tensor]]:
     """
-    Load all mask ``.pt`` files from *run_dir*.
+    Load all mask ``.pt`` files from a DM run directory.
 
-    :param run_dir: Path to a DM run output directory.
+    :param run_dir: Path to a DM run output directory
     :type run_dir: str | Path
-    :returns: ``{layer_name: {category_name: mask_tensor}}``.
+    :returns: ``{layer_name: {category_name: mask_tensor}}``
     :rtype: dict[str, dict[str, torch.Tensor]]
     """
     run_dir = Path(run_dir)
@@ -58,11 +58,11 @@ def load_dm_masks(run_dir: str | Path) -> dict[str, dict[str, torch.Tensor]]:
 
 
 def _read_layer_names(run_dir: Path) -> list[str]:
+    """Read layer names from metadata.json, or infer from mask filenames."""
     meta = run_dir / "metadata.json"
     if meta.exists():
         with open(meta) as f:
             return json.load(f).get("layers", [])
-    # fallback: infer from filenames
     names = set()
     for pt in run_dir.glob("mask_*.pt"):
         rest = pt.stem.removeprefix("mask_")
@@ -76,22 +76,26 @@ def _split_by_layers(
     rest: str,
     layer_names: list[str],
 ) -> tuple[str, str]:
+    """Split a mask filename stem into (layer_name, category) using longest-prefix match."""
     for ln in layer_names:
         prefix = ln + "_"
         if rest.startswith(prefix):
             return ln, rest[len(prefix) :]
-    return rest.split("_", 1)[0], rest.split("_", 1)[1]
+    parts = rest.split("_", 1)
+    return parts[0], parts[1]
 
 
 def summary_table(
     masks: dict[str, dict[str, torch.Tensor]], threshold: float = 0.5
 ) -> pd.DataFrame:
     """
-    One row per (layer, category) with survivor/dead counts and mean KL-relevant stats.
+    One row per (layer, category) with survivor/dead counts and weight stats.
 
-    :param masks: Output of :func:`load_dm_masks`.
+    Directions below 0.05 are counted as dead.
+
+    :param masks: Loaded DM masks, ``{layer: {category: tensor}}``
     :type masks: dict[str, dict[str, torch.Tensor]]
-    :param threshold: Survivor threshold.
+    :param threshold: Survivor threshold
     :type threshold: float
     :returns: DataFrame with columns: layer, category, n_dirs, survivors,
         dead, mid, mean_weight, median_weight.
@@ -127,15 +131,15 @@ def survivors(
     """
     Sorted direction indices whose mask weight exceeds *threshold*.
 
-    :param masks: Output of :func:`load_dm_masks`.
+    :param masks: Loaded DM masks, ``{layer: {category: tensor}}``
     :type masks: dict[str, dict[str, torch.Tensor]]
-    :param layer: Layer name (e.g. ``"linear_2"``).
+    :param layer: Layer name (e.g. ``"linear_2"``)
     :type layer: str
-    :param category: Category name (e.g. ``"figure_diagram"``).
+    :param category: Category name (e.g. ``"figure_diagram"``)
     :type category: str
-    :param threshold: Weight threshold.
+    :param threshold: Weight threshold
     :type threshold: float
-    :returns: Sorted list of direction indices.
+    :returns: Sorted list of direction indices
     :rtype: list[int]
     """
     m = masks[layer][category]
@@ -154,15 +158,15 @@ def gap_survivors(
 
     Returns ``(direction_index, gap)`` pairs sorted by gap descending.
 
-    :param masks: Output of :func:`load_dm_masks`.
+    :param masks: Loaded DM masks, ``{layer: {category: tensor}}``
     :type masks: dict[str, dict[str, torch.Tensor]]
-    :param layer: Layer name.
+    :param layer: Layer name
     :type layer: str
-    :param category: Category name.
+    :param category: Category name
     :type category: str
-    :param min_gap: Minimum weight difference vs. the next-best category.
+    :param min_gap: Minimum weight difference vs. the next-best category
     :type min_gap: float
-    :returns: List of ``(direction_index, gap)`` sorted by gap descending.
+    :returns: List of ``(direction_index, gap)`` sorted by gap descending
     :rtype: list[tuple[int, float]]
     """
     cats = list(masks[layer].keys())
@@ -185,15 +189,15 @@ def ranked_directions(
     """
     Directions sorted by mask weight (descending).
 
-    :param masks: Output of :func:`load_dm_masks`.
+    :param masks: Loaded DM masks, ``{layer: {category: tensor}}``
     :type masks: dict[str, dict[str, torch.Tensor]]
-    :param layer: Layer name.
+    :param layer: Layer name
     :type layer: str
-    :param category: Category name.
+    :param category: Category name
     :type category: str
-    :param top_k: If given, only return the top *k* directions.
+    :param top_k: If given, only return the top *k* directions
     :type top_k: int | None
-    :returns: DataFrame with columns: direction, weight.
+    :returns: DataFrame with columns: direction, weight
     :rtype: pd.DataFrame
     """
     m = masks[layer][category]
@@ -217,15 +221,15 @@ def distribution(
     """
     Bucket breakdown of mask weights.
 
-    :param masks: Output of :func:`load_dm_masks`.
+    :param masks: Loaded DM masks, ``{layer: {category: tensor}}``
     :type masks: dict[str, dict[str, torch.Tensor]]
-    :param layer: Layer name.
+    :param layer: Layer name
     :type layer: str
-    :param category: Category name.
+    :param category: Category name
     :type category: str
-    :param bins: Bin edges. Defaults to ``[0, 0.05, 0.2, 0.5, 0.8, 0.95, 1.01]``.
+    :param bins: Bin edges. Defaults to ``[0, 0.05, 0.2, 0.5, 0.8, 0.95, 1.01]``
     :type bins: list[float] | None
-    :returns: DataFrame with columns: range, count.
+    :returns: DataFrame with columns: range, count
     :rtype: pd.DataFrame
     """
     if bins is None:
@@ -247,13 +251,13 @@ def overlap_matrix(
     """
     Category × category matrix of survivor overlap (intersection size).
 
-    :param masks: Output of :func:`load_dm_masks`.
+    :param masks: Loaded DM masks, ``{layer: {category: tensor}}``
     :type masks: dict[str, dict[str, torch.Tensor]]
-    :param layer: Layer name.
+    :param layer: Layer name
     :type layer: str
-    :param threshold: Survivor threshold.
+    :param threshold: Survivor threshold
     :type threshold: float
-    :returns: Square DataFrame, rows and columns are categories.
+    :returns: Square DataFrame, rows and columns are categories
     :rtype: pd.DataFrame
     """
     cats = list(masks[layer].keys())
@@ -270,13 +274,13 @@ def jaccard_matrix(
     """
     Category × category Jaccard similarity of survivors.
 
-    :param masks: Output of :func:`load_dm_masks`.
+    :param masks: Loaded DM masks, ``{layer: {category: tensor}}``
     :type masks: dict[str, dict[str, torch.Tensor]]
-    :param layer: Layer name.
+    :param layer: Layer name
     :type layer: str
-    :param threshold: Survivor threshold.
+    :param threshold: Survivor threshold
     :type threshold: float
-    :returns: Square DataFrame with Jaccard values (0–1).
+    :returns: Square DataFrame with Jaccard values (0–1)
     :rtype: pd.DataFrame
     """
     cats = list(masks[layer].keys())
@@ -294,27 +298,27 @@ def jaccard_matrix(
 def direction_profile(
     masks: dict[str, dict[str, torch.Tensor]],
     layer: str,
-    S: torch.Tensor | None = None,
+    singular_values: torch.Tensor | None = None,
     threshold: float = 0.5,
 ) -> pd.DataFrame:
     """
     Per-direction stats across all categories, optionally with singular values.
 
     Returns one row per direction.  Boolean columns indicate survival in
-    each category; ``n_survived`` counts them.  When *S* is provided,
-    ``sv_magnitude`` is included so you can correlate importance with
-    SVD rank.
+    each category; ``n_survived`` counts them.  When *singular_values* is
+    provided, ``sv_magnitude`` is included so you can correlate importance
+    with SVD rank.
 
-    :param masks: Output of :func:`load_dm_masks`.
+    :param masks: Loaded DM masks, ``{layer: {category: tensor}}``
     :type masks: dict[str, dict[str, torch.Tensor]]
-    :param layer: Layer name.
+    :param layer: Layer name
     :type layer: str
-    :param S: Singular value vector for this layer (e.g. ``adapter.svd_layers[i].S``).
-    :type S: torch.Tensor | None
-    :param threshold: Survivor threshold.
+    :param singular_values: Singular value vector for this layer
+    :type singular_values: torch.Tensor | None
+    :param threshold: Survivor threshold
     :type threshold: float
     :returns: DataFrame with columns: direction, [sv_magnitude,]
-        n_survived, mean_weight, then one bool column per category.
+        n_survived, mean_weight, then one bool column per category
     :rtype: pd.DataFrame
     """
     cats = list(masks[layer].keys())
@@ -323,8 +327,8 @@ def direction_profile(
     survived = weights > threshold  # (n_cats, n_dirs)
 
     data = {"direction": list(range(n_dirs))}
-    if S is not None:
-        data["sv_magnitude"] = S.detach().cpu().float().tolist()
+    if singular_values is not None:
+        data["sv_magnitude"] = singular_values.detach().cpu().float().tolist()
     data["n_survived"] = survived.sum(dim=0).tolist()
     data["mean_weight"] = weights.mean(dim=0).tolist()
     for i, cat in enumerate(cats):
@@ -340,23 +344,22 @@ def random_baseline_masks(
     n_seeds: int = 3,
 ) -> list[torch.Tensor]:
     """
-    Reproduce the exact random masks that ``evaluate_dm_baselines`` used.
+    Generate binary random masks matching the RNG used by evaluate_dm_baselines.
 
-    For each seed in ``range(n_seeds)``, generates a binary mask with the
-    same number of survivors as the optimized mask at *threshold*, using
-    the same RNG logic as ``evaluate_dm_baselines``.
+    Each mask has the same number of survivors as the optimized mask at
+    *threshold*, with random positions selected via seeded torch.randperm.
 
-    :param masks: Output of :func:`load_dm_masks`.
+    :param masks: Loaded DM masks, ``{layer: {category: tensor}}``
     :type masks: dict[str, dict[str, torch.Tensor]]
-    :param layer: Layer name.
+    :param layer: Layer name
     :type layer: str
-    :param category: Category name.
+    :param category: Category name
     :type category: str
-    :param threshold: Binarisation threshold.
+    :param threshold: Binarisation threshold
     :type threshold: float
-    :param n_seeds: Number of seeds (must match the run's ``n_random_seeds``).
+    :param n_seeds: Number of seeds to generate
     :type n_seeds: int
-    :returns: List of binary mask tensors, one per seed.
+    :returns: Binary mask tensors, one per seed
     :rtype: list[torch.Tensor]
     """
     m = masks[layer][category]
@@ -377,26 +380,24 @@ def random_continuous_masks(
     masks: dict[str, dict[str, torch.Tensor]],
     layer: str,
     n_seeds: int = 3,
-    survivor_indices: dict[str, list[int]] | None = None,
+    threshold: float | None = None,
 ) -> list[dict[str, torch.Tensor]]:
     """
     Generate continuous uniform [0, 1] random masks for all categories.
 
-    When *survivor_indices* is provided, each mask has the same length as
-    the index list for that category (only surviving directions). Otherwise
-    each mask has the full ``n_dirs`` length.
+    When *threshold* is provided, each mask only covers surviving
+    directions (weight > threshold), with length equal to the survivor
+    count for that category. Otherwise each mask has the full direction count.
 
-    :param masks: Output of :func:`load_dm_masks`.
+    :param masks: Loaded DM masks, ``{layer: {category: tensor}}``
     :type masks: dict[str, dict[str, torch.Tensor]]
-    :param layer: Layer name.
+    :param layer: Layer name
     :type layer: str
-    :param n_seeds: Number of random seeds.
+    :param n_seeds: Number of random seeds to generate
     :type n_seeds: int
-    :param survivor_indices: If given, ``{category: [dir_indices]}``.
-        Each random mask will have length ``len(dir_indices)`` instead of
-        the full direction count.
-    :type survivor_indices: dict[str, list[int]] | None
-    :returns: List of dicts ``{category: mask_tensor}``, one per seed.
+    :param threshold: Survivor threshold for truncating mask length
+    :type threshold: float | None
+    :returns: List of ``{category: mask_tensor}`` dicts, one per seed
     :rtype: list[dict[str, torch.Tensor]]
     """
     cats = list(masks[layer].keys())
@@ -406,8 +407,8 @@ def random_continuous_masks(
         gen = torch.Generator().manual_seed(seed)
         seed_masks = {}
         for cat in cats:
-            if survivor_indices is not None and cat in survivor_indices:
-                length = len(survivor_indices[cat])
+            if threshold is not None:
+                length = int((masks[layer][cat] > threshold).sum().item())
             else:
                 length = n_dirs
             seed_masks[cat] = torch.rand(length, generator=gen)
@@ -421,18 +422,18 @@ def random_mask(
     seed: int = 0,
 ) -> torch.Tensor:
     """
-    Generate a binary-ish mask with *n_survivors* random directions on.
+    Generate a soft binary mask (0.01/0.99) with *n_survivors* random directions on.
 
     Surviving directions get weight 0.99 (matching optimized-mask init),
-    the rest get 0.01.  Use as a baseline to compare against optimized masks.
+    the rest get 0.01.
 
-    :param n_dirs: Total number of directions.
+    :param n_dirs: Total number of directions
     :type n_dirs: int
-    :param n_survivors: How many directions to mark as surviving.
+    :param n_survivors: How many directions to mark as surviving
     :type n_survivors: int
-    :param seed: RNG seed for reproducibility.
+    :param seed: RNG seed for reproducibility
     :type seed: int
-    :returns: Mask tensor of shape ``(n_dirs,)``.
+    :returns: Mask tensor of shape ``(n_dirs,)``
     :rtype: torch.Tensor
     """
     gen = torch.Generator().manual_seed(seed)
@@ -455,15 +456,15 @@ def mask_agreement(
     Returns Jaccard similarity of survivor sets, Pearson correlation
     of raw weights, and set-difference counts.
 
-    :param masks_a: First run's masks from :func:`load_dm_masks`.
+    :param masks_a: First run's masks, ``{layer: {category: tensor}}``
     :type masks_a: dict[str, dict[str, torch.Tensor]]
-    :param masks_b: Second run's masks from :func:`load_dm_masks`.
+    :param masks_b: Second run's masks, ``{layer: {category: tensor}}``
     :type masks_b: dict[str, dict[str, torch.Tensor]]
-    :param layer: Layer name.
+    :param layer: Layer name
     :type layer: str
-    :param category: Category name.
+    :param category: Category name
     :type category: str
-    :param threshold: Survivor threshold.
+    :param threshold: Survivor threshold
     :type threshold: float
     :returns: Dict with ``jaccard``, ``weight_correlation``, ``shared``,
         ``only_a``, ``only_b``, ``survivors_a``, ``survivors_b``.
@@ -497,18 +498,18 @@ def compare_categories(
     """
     Compare survivors between two categories on the same layer.
 
-    :param masks: Output of :func:`load_dm_masks`.
+    :param masks: Loaded DM masks, ``{layer: {category: tensor}}``
     :type masks: dict[str, dict[str, torch.Tensor]]
-    :param layer: Layer name.
+    :param layer: Layer name
     :type layer: str
-    :param cat_a: First category.
+    :param cat_a: First category
     :type cat_a: str
-    :param cat_b: Second category.
+    :param cat_b: Second category
     :type cat_b: str
-    :param threshold: Survivor threshold.
+    :param threshold: Survivor threshold
     :type threshold: float
-    :returns: Dict with keys ``shared``, ``only_a``, ``only_b`` — sorted
-        lists of direction indices.
+    :returns: Dict with keys ``shared``, ``only_{cat_a}``, ``only_{cat_b}`` —
+        sorted lists of direction indices
     :rtype: dict[str, list[int]]
     """
     sa = set(torch.where(masks[layer][cat_a] > threshold)[0].tolist())
