@@ -14,6 +14,16 @@ from .ablation import (
     run_ablation,
     run_joint_ablation,
 )
+from .ablation_analysis import (
+    baseline_comparison,
+    cumulative_kl,
+    gold_prob_summary,
+    joint_kl_table,
+    load_ablation,
+    most_changed_directions,
+    super_additivity,
+    topk_botk_summary,
+)
 from .cka import linear_cka
 from .config import DirectionalMaskingConfig
 from .data import HARNESS_PROMPT, best_anls, filter_categories, load_docvqa, relaxed_anls
@@ -26,6 +36,8 @@ from .dm_analysis import (
     load_dm_masks,
     mask_agreement,
     overlap_matrix,
+    random_baseline_masks,
+    random_continuous_masks,
     random_mask,
     ranked_directions,
     summary_table,
@@ -75,7 +87,17 @@ __all__ = [
     "jaccard_matrix",
     "compare_categories",
     "direction_profile",
+    "random_baseline_masks",
+    "random_continuous_masks",
     "random_mask",
     "mask_agreement",
     "linear_cka",
+    "load_ablation",
+    "joint_kl_table",
+    "baseline_comparison",
+    "cumulative_kl",
+    "gold_prob_summary",
+    "topk_botk_summary",
+    "super_additivity",
+    "most_changed_directions",
 ]
