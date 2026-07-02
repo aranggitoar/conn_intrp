@@ -21,6 +21,7 @@ Main Functions:
     super_additivity: Joint vs sum-of-individual KL ratios
     most_changed_directions: Directions with largest individual KL per category
     kl_budget: Active-set KL as fraction of total-layer KL budget
+    delta_to_prob_change: Convert log-prob deltas to multiplier or percentage
 """
 
 import json
@@ -248,9 +249,15 @@ def gold_prob_summary(
     baseline: str = "cat",
     level: str = "joint",
     threshold: float = 0.7,
+    representation: str = "multiplier",
 ) -> pd.DataFrame:
     """
     Gold log-prob change distribution per category.
+
+    By default reports probability multipliers (e.g. 0.6 means gold
+    token probability became 60% of original after ablation).  Set
+    *representation* to ``"nats"`` for raw log-prob deltas or ``"pct"``
+    for percentage change.
 
     :param abl: Loaded ablation results, ``{category: {anls, joint, ...}}``
     :type abl: dict
@@ -261,6 +268,10 @@ def gold_prob_summary(
     :type level: str
     :param threshold: Binarisation threshold (only for ``level="joint"``)
     :type threshold: float
+    :param representation: ``"multiplier"`` (default) — probability
+        ratio after/before; ``"pct"`` — percentage change;
+        ``"nats"`` — raw log-prob delta
+    :type representation: str
     :returns: DataFrame with columns: category, layer, mean, median, std,
         q25, q75, min, max, n_images
     :rtype: pd.DataFrame
@@ -276,6 +287,8 @@ def gold_prob_summary(
                 continue
             for layer in sets[set_key]:
                 vals = np.array(sets[set_key][layer][key])
+                if representation != "nats":
+                    vals = delta_to_prob_change(vals, mode=representation)
                 rows.append(_dist_row(cat, layer, vals))
         else:
             dl = data.get("delta_logits", {})
@@ -295,9 +308,37 @@ def gold_prob_summary(
                         all_medians.append(np.median(vals))
                 if all_medians:
                     arr = np.array(all_medians)
+                    if representation != "nats":
+                        arr = delta_to_prob_change(arr, mode=representation)
                     rows.append(_dist_row(cat, layer, arr))
 
     return pd.DataFrame(rows)
+
+
+def delta_to_prob_change(
+    delta: np.ndarray | float,
+    mode: str = "multiplier",
+) -> np.ndarray | float:
+    """
+    Convert log-prob deltas to interpretable probability change.
+
+    Delta is ``lp_orig - lp_ablated`` (positive means ablation hurt).
+
+    :param delta: Raw delta in nats (scalar or array)
+    :type delta: np.ndarray | float
+    :param mode: ``"multiplier"`` — probability ratio (0.6 means
+        probability became 60% of original; 2.0 means doubled).
+        ``"pct"`` — percentage change (−40% means decreased by 40%;
+        +100% means doubled).  Asymmetric: decreases cap at −100%,
+        increases are unbounded.
+    :type mode: str
+    :returns: Converted values, same shape as *delta*
+    :rtype: np.ndarray | float
+    """
+    ratio = np.exp(-np.asarray(delta))
+    if mode == "multiplier":
+        return ratio
+    return (ratio - 1) * 100
 
 
 def _get_layer_dl(dl: dict, layer: str) -> dict:
