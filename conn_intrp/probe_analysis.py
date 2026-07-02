@@ -16,7 +16,8 @@ Main Functions:
     probe_selectivity_table: Per-direction spatial selectivity summary
     probe_ablation_cross: Cross-reference spatial selectivity with ablation KL
     probe_direction_clusters: Pairwise spatial similarity and cluster assignment
-    plot_probe_heatmap: Overlay a single heatmap on an image
+    plot_probe_direction: Plot a direction's heatmap from a loaded probe dict
+    plot_probe_heatmap: Overlay a single heatmap on an image (low-level)
     save_probe_heatmaps: Save heatmap overlays for one image across directions
 """
 
@@ -354,6 +355,61 @@ def _connected_components(adj: np.ndarray) -> list[int]:
                     stack.append(neighbor)
         current += 1
     return labels
+
+
+def plot_probe_direction(
+    probe: dict,
+    category: str,
+    layer: str,
+    direction: int,
+    *,
+    image_idx: int | None = 0,
+    image_base_path: str | Path,
+    mode: str = "signed",
+    ax=None,
+):
+    """
+    Plot a single direction's heatmap overlaid on an image.
+
+    Convenience wrapper around :func:`plot_probe_heatmap` that handles
+    indexing into the loaded probe dict.
+
+    :param probe: Loaded probe results from :func:`load_probe`
+    :type probe: dict
+    :param category: Category name (must match a key in *probe*)
+    :type category: str
+    :param layer: Layer name (e.g. ``"linear_1"``, ``"proj"``)
+    :type layer: str
+    :param direction: Direction index (original SVD index, not positional)
+    :type direction: int
+    :param image_idx: Which image to use. ``None`` for the mean heatmap
+        across all images (overlaid on the first image as background).
+    :type image_idx: int | None
+    :param image_base_path: Root directory for image files.
+    :type image_base_path: str | Path
+    :param mode: ``"signed"`` or ``"abs"`` (passed to :func:`plot_probe_heatmap`)
+    :type mode: str
+    :param ax: Matplotlib axes. Created if ``None``.
+    :returns: The axes with the overlay rendered.
+    :rtype: matplotlib.axes.Axes
+    """
+    entry = probe[category]
+    meta = entry["meta"]
+    proj = entry["projections"][layer]  # (n_images, n_patches, n_dirs)
+    grid_size = meta["grid_size"]
+    dir_indices = meta["layers"][layer]["directions"]
+    dir_pos = dir_indices.index(direction)
+
+    if image_idx is None:
+        heatmap_flat = proj[:, :, dir_pos].float().mean(dim=0)
+        bg_idx = 0
+    else:
+        heatmap_flat = proj[image_idx, :, dir_pos].float()
+        bg_idx = image_idx
+
+    heatmap = heatmap_flat.reshape(grid_size, grid_size)
+    image_path = Path(image_base_path) / meta["image_files"][bg_idx]
+    return plot_probe_heatmap(image_path, heatmap, mode=mode, ax=ax)
 
 
 def plot_probe_heatmap(

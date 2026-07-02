@@ -72,6 +72,7 @@ from .dm_analysis import (
 )
 from .probe_analysis import (
     load_probe,
+    plot_probe_direction,
     plot_probe_heatmap,
     probe_ablation_cross,
     probe_direction_clusters,
@@ -145,6 +146,7 @@ __all__ = [
     "run_spatial_probe",
     # probe analysis
     "load_probe",
+    "plot_probe_direction",
     "plot_probe_heatmap",
     "save_probe_heatmaps",
     "probe_selectivity_table",
