@@ -25,6 +25,10 @@ Main Functions:
     cumulative_kl: Per-direction KL sorted by DM weight
     super_additivity: Joint vs sum-of-individual KL ratios
     kl_budget: Active-set KL as fraction of total-layer KL budget
+    load_probe: Load probe projections from a run directory
+    probe_selectivity_table: Per-direction spatial selectivity summary
+    probe_ablation_cross: Cross-reference spatial selectivity with ablation KL
+    probe_direction_clusters: Pairwise spatial similarity and cluster assignment
 """
 
 from .ablation import (
@@ -65,6 +69,12 @@ from .dm_analysis import (
     ranked_directions,
     summary_table,
     survivors,
+)
+from .probe_analysis import (
+    load_probe,
+    probe_ablation_cross,
+    probe_direction_clusters,
+    probe_selectivity_table,
 )
 from .output import (
     find_latest_run,
@@ -133,6 +143,11 @@ __all__ = [
     "run_spatial_probe",
     "plot_probe_heatmap",
     "save_probe_heatmaps",
+    # probe analysis
+    "load_probe",
+    "probe_selectivity_table",
+    "probe_ablation_cross",
+    "probe_direction_clusters",
     # cka
     "linear_cka",
 ]
