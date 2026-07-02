@@ -19,15 +19,12 @@ Example::
 
 Main Functions:
     run_spatial_probe: Compute and save per-category probe projections.
-    plot_probe_heatmap: Overlay a single heatmap on an image.
-    save_probe_heatmaps: Save heatmap overlays for one image across directions.
 """
 
 import math
 from pathlib import Path
 
 import torch
-from torch.nn import functional as F
 from tqdm.auto import tqdm
 
 from .models.base import ModelAdapter
@@ -146,110 +143,3 @@ def run_spatial_probe(
                 "image_files": image_files,
             },
         )
-
-
-def plot_probe_heatmap(
-    image_path: str | Path,
-    heatmap: torch.Tensor,
-    *,
-    mode: str = "signed",
-    upsample_size: tuple[int, int] | None = None,
-    ax=None,
-):
-    """
-    Overlay a spatial probe heatmap on an image.
-
-    :param image_path: Path to the original image.
-    :type image_path: str | Path
-    :param heatmap: 2-D tensor of shape ``(grid_h, grid_w)``.
-    :type heatmap: torch.Tensor
-    :param mode: ``"signed"`` (``RdBu_r``, range ``[-1, 1]``) or
-        ``"abs"`` (``hot``, range ``[0, 1]``).
-    :type mode: str
-    :param upsample_size: ``(H, W)`` target for upsampling.
-        Defaults to the image's native size.
-    :type upsample_size: tuple[int, int] | None
-    :param ax: Matplotlib axes. Created if ``None``.
-    :returns: The axes with the overlay rendered.
-    :rtype: matplotlib.axes.Axes
-    """
-    import matplotlib.pyplot as plt
-    from PIL import Image
-
-    image = Image.open(image_path).convert("RGB")
-
-    if upsample_size is None:
-        upsample_size = (image.height, image.width)
-
-    heatmap_up = (
-        F.interpolate(
-            heatmap.float()[None, None],
-            size=upsample_size,
-            mode="nearest",
-        )
-        .squeeze()
-        .cpu()
-    )
-
-    if ax is None:
-        _, ax = plt.subplots()
-
-    ax.imshow(image)
-    if mode == "abs":
-        ax.imshow(heatmap_up.abs(), cmap="hot", alpha=0.5, vmin=0, vmax=1)
-    else:
-        ax.imshow(heatmap_up, cmap="RdBu_r", alpha=0.5, vmin=-1, vmax=1)
-    ax.axis("off")
-    return ax
-
-
-def save_probe_heatmaps(
-    image_path: str | Path,
-    projection: torch.Tensor,
-    *,
-    directions: list[int],
-    grid_size: int,
-    out_dir: str | Path,
-    modes: tuple[str, ...] = ("signed", "abs"),
-    layer_name: str = "",
-) -> None:
-    """
-    Save heatmap overlay images for one image across specified directions.
-
-    ``projection[:, i]`` must correspond to ``directions[i]``.
-
-    :param image_path: Path to the original image.
-    :type image_path: str | Path
-    :param projection: Projection tensor of shape
-        ``(n_patches, n_selected_dirs)``.
-    :type projection: torch.Tensor
-    :param directions: Original direction indices (used for filenames).
-    :type directions: list[int]
-    :param grid_size: Spatial grid side length (e.g. 8 for 64 patches).
-    :type grid_size: int
-    :param out_dir: Directory to write heatmap images.
-    :type out_dir: str | Path
-    :param modes: Rendering modes to save (``"signed"`` and/or ``"abs"``).
-    :type modes: tuple[str, ...]
-    :param layer_name: Optional prefix for filenames (e.g. ``"linear_2"``).
-    :type layer_name: str
-    """
-    import matplotlib.pyplot as plt
-
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    image_stem = Path(image_path).stem
-    prefix = f"{layer_name}_" if layer_name else ""
-
-    for i, dir_idx in enumerate(directions):
-        heatmap = projection[:, i].reshape(grid_size, grid_size)
-        for mode in modes:
-            fig, ax = plt.subplots()
-            plot_probe_heatmap(image_path, heatmap, mode=mode, ax=ax)
-            fig.savefig(
-                out_dir / f"{prefix}{image_stem}_dir{dir_idx}_{mode}.png",
-                bbox_inches="tight",
-                pad_inches=0,
-                dpi=150,
-            )
-            plt.close(fig)

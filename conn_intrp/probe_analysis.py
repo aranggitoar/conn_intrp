@@ -16,6 +16,8 @@ Main Functions:
     probe_selectivity_table: Per-direction spatial selectivity summary
     probe_ablation_cross: Cross-reference spatial selectivity with ablation KL
     probe_direction_clusters: Pairwise spatial similarity and cluster assignment
+    plot_probe_heatmap: Overlay a single heatmap on an image
+    save_probe_heatmaps: Save heatmap overlays for one image across directions
 """
 
 import json
@@ -87,46 +89,41 @@ def probe_selectivity_table(
                 center_mask[r * grid_size + c] = True
 
         for layer_name, proj in projections.items():
-            data = proj.numpy()
+            data = proj.numpy()  # (n_images, n_patches, n_dirs)
             dir_indices = meta["layers"][layer_name]["directions"]
+            n_dirs = len(dir_indices)
+
+            mean_hm = data.mean(axis=0)  # (n_patches, n_dirs)
+            abs_mean = np.abs(mean_hm)
+
+            cv = abs_mean.std(axis=0) / (abs_mean.mean(axis=0) + 1e-10)
+
+            p = abs_mean / (abs_mean.sum(axis=0, keepdims=True) + 1e-10)
+            raw_entropy = -(p * np.log(p + 1e-10)).sum(axis=0)
+            max_entropy = np.log(n_patches)
+            entropy = raw_entropy / max_entropy if max_entropy > 0 else np.zeros(n_dirs)
+
+            per_image_r = _batch_per_image_corr(data, mean_hm)
+
+            peak_idx = np.argmax(abs_mean, axis=0)
+            peak_row = peak_idx // grid_size
+            peak_col = peak_idx % grid_size
+
+            center_act = abs_mean[center_mask].mean(axis=0)
+            all_act = abs_mean.mean(axis=0)
+            center_bias = center_act / (all_act + 1e-10)
 
             for i, d_idx in enumerate(dir_indices):
-                img_heatmaps = data[:, :, i]
-                mean_hm = img_heatmaps.mean(axis=0)
-                abs_mean = np.abs(mean_hm)
-
-                cv = abs_mean.std() / (abs_mean.mean() + 1e-10)
-
-                p = abs_mean / (abs_mean.sum() + 1e-10)
-                raw_entropy = -(p * np.log(p + 1e-10)).sum()
-                max_entropy = np.log(n_patches)
-                entropy = raw_entropy / max_entropy if max_entropy > 0 else 0.0
-
-                corrs = []
-                for img_idx in range(data.shape[0]):
-                    hm = img_heatmaps[img_idx]
-                    if hm.std() > 1e-10 and mean_hm.std() > 1e-10:
-                        corrs.append(np.corrcoef(hm, mean_hm)[0, 1])
-                per_image_r = float(np.mean(corrs)) if corrs else 0.0
-
-                peak_idx = int(np.argmax(abs_mean))
-                peak_row = peak_idx // grid_size
-                peak_col = peak_idx % grid_size
-
-                center_act = abs_mean[center_mask].mean()
-                all_act = abs_mean.mean()
-                center_bias = center_act / (all_act + 1e-10)
-
                 rows.append({
                     "category": cat,
                     "layer": layer_name,
                     "direction": d_idx,
-                    "spatial_cv": cv,
-                    "entropy": entropy,
-                    "per_image_r": per_image_r,
-                    "peak_row": peak_row,
-                    "peak_col": peak_col,
-                    "center_bias": center_bias,
+                    "spatial_cv": float(cv[i]),
+                    "entropy": float(entropy[i]),
+                    "per_image_r": float(per_image_r[i]),
+                    "peak_row": int(peak_row[i]),
+                    "peak_col": int(peak_col[i]),
+                    "center_bias": float(center_bias[i]),
                 })
 
     return pd.DataFrame(rows)
@@ -169,9 +166,14 @@ def probe_ablation_cross(
         dl = abl[cat].get("delta_logits", {})
 
         for layer_name, proj in projections.items():
-            data = proj.numpy()
+            data = proj.numpy()  # (n_images, n_patches, n_dirs)
             dir_indices = meta["layers"][layer_name]["directions"]
             layer_dl = dl if layer_name == "proj" else dl.get(layer_name, {})
+
+            mean_hm = data.mean(axis=0)  # (n_patches, n_dirs)
+            abs_mean = np.abs(mean_hm)
+            cv = abs_mean.std(axis=0) / (abs_mean.mean(axis=0) + 1e-10)
+            per_image_r = _batch_per_image_corr(data, mean_hm)
 
             layer_rows = []
             for i, d_idx in enumerate(dir_indices):
@@ -184,25 +186,13 @@ def probe_ablation_cross(
                 else:
                     mean_kl = float(np.mean(kl_vals))
 
-                img_heatmaps = data[:, :, i]
-                mean_hm = img_heatmaps.mean(axis=0)
-                abs_mean = np.abs(mean_hm)
-                cv = abs_mean.std() / (abs_mean.mean() + 1e-10)
-
-                corrs = []
-                for img_idx in range(data.shape[0]):
-                    hm = img_heatmaps[img_idx]
-                    if hm.std() > 1e-10 and mean_hm.std() > 1e-10:
-                        corrs.append(np.corrcoef(hm, mean_hm)[0, 1])
-                per_image_r = float(np.mean(corrs)) if corrs else 0.0
-
                 layer_rows.append({
                     "category": cat,
                     "layer": layer_name,
                     "direction": d_idx,
                     "indiv_kl": mean_kl,
-                    "spatial_cv": cv,
-                    "per_image_r": per_image_r,
+                    "spatial_cv": float(cv[i]),
+                    "per_image_r": float(per_image_r[i]),
                 })
 
             spearman = float("nan")
@@ -315,6 +305,25 @@ def probe_direction_clusters(
     return pd.DataFrame(assign_rows), pd.DataFrame(sim_rows)
 
 
+def _batch_per_image_corr(data: np.ndarray, mean_hm: np.ndarray) -> np.ndarray:
+    """Vectorised per-image Pearson correlation with the mean heatmap.
+
+    Returns shape ``(n_dirs,)`` — mean correlation across images for each direction.
+    """
+    # data: (n_images, n_patches, n_dirs), mean_hm: (n_patches, n_dirs)
+    data_centered = data - data.mean(axis=1, keepdims=True)
+    mean_centered = mean_hm - mean_hm.mean(axis=0, keepdims=True)
+
+    numer = (data_centered * mean_centered[None]).sum(axis=1)  # (n_images, n_dirs)
+    data_norm = np.sqrt((data_centered ** 2).sum(axis=1))       # (n_images, n_dirs)
+    mean_norm = np.sqrt((mean_centered ** 2).sum(axis=0))       # (n_dirs,)
+
+    denom = data_norm * mean_norm[None]
+    valid = (data_norm > 1e-10) & (mean_norm[None] > 1e-10)
+    corrs = np.where(valid, numer / (denom + 1e-10), np.nan)
+    return np.nanmean(corrs, axis=0)
+
+
 def _spearman(a: np.ndarray, b: np.ndarray) -> float:
     """Spearman rank correlation without scipy."""
     n = len(a)
@@ -345,3 +354,111 @@ def _connected_components(adj: np.ndarray) -> list[int]:
                     stack.append(neighbor)
         current += 1
     return labels
+
+
+def plot_probe_heatmap(
+    image_path: str | Path,
+    heatmap: torch.Tensor,
+    *,
+    mode: str = "signed",
+    upsample_size: tuple[int, int] | None = None,
+    ax=None,
+):
+    """
+    Overlay a spatial probe heatmap on an image.
+
+    :param image_path: Path to the original image.
+    :type image_path: str | Path
+    :param heatmap: 2-D tensor of shape ``(grid_h, grid_w)``.
+    :type heatmap: torch.Tensor
+    :param mode: ``"signed"`` (``RdBu_r``, range ``[-1, 1]``) or
+        ``"abs"`` (``hot``, range ``[0, 1]``).
+    :type mode: str
+    :param upsample_size: ``(H, W)`` target for upsampling.
+        Defaults to the image's native size.
+    :type upsample_size: tuple[int, int] | None
+    :param ax: Matplotlib axes. Created if ``None``.
+    :returns: The axes with the overlay rendered.
+    :rtype: matplotlib.axes.Axes
+    """
+    import matplotlib.pyplot as plt
+    from PIL import Image
+    from torch.nn import functional as F
+
+    image = Image.open(image_path).convert("RGB")
+
+    if upsample_size is None:
+        upsample_size = (image.height, image.width)
+
+    heatmap_up = (
+        F.interpolate(
+            heatmap.float()[None, None],
+            size=upsample_size,
+            mode="nearest",
+        )
+        .squeeze()
+        .cpu()
+    )
+
+    if ax is None:
+        _, ax = plt.subplots()
+
+    ax.imshow(image)
+    if mode == "abs":
+        ax.imshow(heatmap_up.abs(), cmap="hot", alpha=0.5, vmin=0, vmax=1)
+    else:
+        ax.imshow(heatmap_up, cmap="RdBu_r", alpha=0.5, vmin=-1, vmax=1)
+    ax.axis("off")
+    return ax
+
+
+def save_probe_heatmaps(
+    image_path: str | Path,
+    projection: torch.Tensor,
+    *,
+    directions: list[int],
+    grid_size: int,
+    out_dir: str | Path,
+    modes: tuple[str, ...] = ("signed", "abs"),
+    layer_name: str = "",
+) -> None:
+    """
+    Save heatmap overlay images for one image across specified directions.
+
+    ``projection[:, i]`` must correspond to ``directions[i]``.
+
+    :param image_path: Path to the original image.
+    :type image_path: str | Path
+    :param projection: Projection tensor of shape
+        ``(n_patches, n_selected_dirs)``.
+    :type projection: torch.Tensor
+    :param directions: Original direction indices (used for filenames).
+    :type directions: list[int]
+    :param grid_size: Spatial grid side length (e.g. 8 for 64 patches).
+    :type grid_size: int
+    :param out_dir: Directory to write heatmap images.
+    :type out_dir: str | Path
+    :param modes: Rendering modes to save (``"signed"`` and/or ``"abs"``).
+    :type modes: tuple[str, ...]
+    :param layer_name: Optional prefix for filenames (e.g. ``"linear_2"``).
+    :type layer_name: str
+    """
+    import matplotlib.pyplot as plt
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    image_stem = Path(image_path).stem
+    prefix = f"{layer_name}_" if layer_name else ""
+
+    for i, dir_idx in enumerate(directions):
+        heatmap = projection[:, i].reshape(grid_size, grid_size)
+        for mode in modes:
+            fig, ax = plt.subplots()
+            plot_probe_heatmap(image_path, heatmap, mode=mode, ax=ax)
+            fig.savefig(
+                out_dir / f"{prefix}{image_stem}_dir{dir_idx}_{mode}.png",
+                bbox_inches="tight",
+                pad_inches=0,
+                dpi=150,
+            )
+            plt.close(fig)

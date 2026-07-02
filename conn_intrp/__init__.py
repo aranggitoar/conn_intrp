@@ -72,9 +72,11 @@ from .dm_analysis import (
 )
 from .probe_analysis import (
     load_probe,
+    plot_probe_heatmap,
     probe_ablation_cross,
     probe_direction_clusters,
     probe_selectivity_table,
+    save_probe_heatmaps,
 )
 from .output import (
     find_latest_run,
@@ -84,7 +86,7 @@ from .output import (
     save_json,
     update_metadata,
 )
-from .spatial_probe import plot_probe_heatmap, run_spatial_probe, save_probe_heatmaps
+from .spatial_probe import run_spatial_probe
 
 __all__ = [
     # config
@@ -141,10 +143,10 @@ __all__ = [
     "most_changed_directions",
     # spatial probe
     "run_spatial_probe",
-    "plot_probe_heatmap",
-    "save_probe_heatmaps",
     # probe analysis
     "load_probe",
+    "plot_probe_heatmap",
+    "save_probe_heatmaps",
     "probe_selectivity_table",
     "probe_ablation_cross",
     "probe_direction_clusters",
