@@ -169,7 +169,7 @@ def probe_ablation_cross(
         for layer_name, proj in projections.items():
             data = proj.numpy()  # (n_images, n_patches, n_dirs)
             dir_indices = meta["layers"][layer_name]["directions"]
-            layer_dl = dl if layer_name == "proj" else dl.get(layer_name, {})
+            layer_dl = dl[layer_name] if layer_name in dl and isinstance(dl[layer_name], dict) else dl
 
             mean_hm = data.mean(axis=0)  # (n_patches, n_dirs)
             abs_mean = np.abs(mean_hm)
