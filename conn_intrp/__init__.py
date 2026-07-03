@@ -40,6 +40,7 @@ from .ablation import (
     run_total_ablation,
 )
 from .ablation_analysis import (
+    anls_summary,
     baseline_comparison,
     cumulative_kl,
     delta_to_prob_change,
@@ -136,6 +137,7 @@ __all__ = [
     # ablation analysis
     "load_ablation",
     "delta_to_prob_change",
+    "anls_summary",
     "joint_kl_table",
     "kl_budget",
     "baseline_comparison",

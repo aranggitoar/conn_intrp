@@ -18,6 +18,7 @@ Main Functions:
     cumulative_kl: Per-direction KL sorted by DM weight for coding-regime comparison
     gold_prob_summary: Gold log-prob change distribution per category
     topk_botk_summary: Aggregated top-K/bottom-K token shifts per category
+    anls_summary: ANLS change per direction or per category
     super_additivity: Joint vs sum-of-individual KL ratios
     most_changed_directions: Directions with largest individual KL per category
     kl_budget: Active-set KL as fraction of total-layer KL budget
@@ -341,6 +342,101 @@ def gold_prob_summary(
     return pd.DataFrame(rows)
 
 
+def anls_summary(
+    abl: dict,
+    *,
+    baseline: str = "cat",
+    level: str = "joint",
+    threshold: float = 0.7,
+    group_by: str = "category",
+) -> pd.DataFrame:
+    """
+    ANLS change summary from ablation results.
+
+    :param abl: Loaded ablation results
+    :type abl: dict
+    :param baseline: Ablation baseline (``"cat"``, ``"zero"``, ``"global"``, ``"rand"``)
+    :type baseline: str
+    :param level: ``"joint"`` or ``"individual"``
+    :type level: str
+    :param threshold: Binarisation threshold (joint only)
+    :type threshold: float
+    :param group_by: ``"category"`` summarises per-direction deltas
+        as a distribution; ``"direction"`` returns one row per direction.
+        Only applies to ``level="individual"``.
+    :type group_by: str
+    :returns: DataFrame with ANLS original, ablated, and delta columns
+    :rtype: pd.DataFrame
+    """
+    _baseline_map = {
+        "cat": "anls_ablated_per_category_mean",
+        "zero": "anls_ablated_zero_mean",
+        "global": "anls_ablated_global_mean",
+        "rand": "anls_ablated_random",
+    }
+    rows = []
+
+    for cat, data in sorted(abl.items()):
+        anls = data.get("anls", {})
+        orig = anls.get("anls_original", float("nan"))
+
+        if level == "joint":
+            set_key = f"active_{threshold}"
+            sets = data.get("joint", {}).get("sets", {})
+            if set_key not in sets:
+                continue
+            for layer in sets[set_key]:
+                ablated = sets[set_key][layer].get(f"anls_{baseline}", float("nan"))
+                rows.append({
+                    "category": cat,
+                    "layer": layer,
+                    "n_dirs": sets[set_key][layer].get("n_directions", 0),
+                    "anls_original": orig,
+                    "anls_ablated": ablated,
+                    "delta": orig - ablated,
+                })
+        else:
+            abl_key = _baseline_map.get(baseline, _baseline_map["cat"])
+            abl_vals_by_layer = anls.get(abl_key, {})
+            dirs_by_layer = anls.get("directions", {})
+            if isinstance(dirs_by_layer, list):
+                dirs_by_layer = {"proj": dirs_by_layer}
+                abl_vals_by_layer = {"proj": abl_vals_by_layer}
+
+            for layer in dirs_by_layer:
+                dir_list = dirs_by_layer[layer]
+                abl_vals = abl_vals_by_layer.get(layer, [])
+                if not abl_vals:
+                    continue
+
+                if group_by == "direction":
+                    for i, d_idx in enumerate(dir_list):
+                        ablated = abl_vals[i]
+                        rows.append({
+                            "category": cat,
+                            "layer": layer,
+                            "direction": d_idx,
+                            "anls_original": orig,
+                            "anls_ablated": ablated,
+                            "delta": orig - ablated,
+                        })
+                else:
+                    deltas = np.array([orig - v for v in abl_vals])
+                    rows.append({
+                        "category": cat,
+                        "layer": layer,
+                        "anls_original": orig,
+                        "mean_delta": deltas.mean(),
+                        "median_delta": np.median(deltas),
+                        "std_delta": deltas.std(),
+                        "max_delta": deltas.max(),
+                        "min_delta": deltas.min(),
+                        "n_dirs": len(deltas),
+                    })
+
+    return pd.DataFrame(rows)
+
+
 def delta_to_prob_change(
     delta: np.ndarray | float,
     mode: str = "multiplier",
@@ -369,7 +465,9 @@ def delta_to_prob_change(
 
 def _get_layer_dl(dl: dict, layer: str) -> dict:
     """Return the delta-logits sub-dict for a given layer."""
-    return dl if layer == "proj" else dl.get(layer, {})
+    if layer in dl and isinstance(dl[layer], dict):
+        return dl[layer]
+    return dl
 
 
 def _dist_row(cat: str, layer: str, vals: np.ndarray) -> dict:
