@@ -366,6 +366,8 @@ def plot_probe_direction(
     image_idx: int | None = 0,
     image_base_path: str | Path,
     mode: str = "signed",
+    alpha: float = 0.8,
+    gamma: float = 0.4,
     ax=None,
 ):
     """
@@ -389,6 +391,10 @@ def plot_probe_direction(
     :type image_base_path: str | Path
     :param mode: ``"signed"`` or ``"abs"`` (passed to :func:`plot_probe_heatmap`)
     :type mode: str
+    :param alpha: Maximum overlay opacity (passed to :func:`plot_probe_heatmap`)
+    :type alpha: float
+    :param gamma: Alpha curve exponent (passed to :func:`plot_probe_heatmap`)
+    :type gamma: float
     :param ax: Matplotlib axes. Created if ``None``.
     :returns: The axes with the overlay rendered.
     :rtype: matplotlib.axes.Axes
@@ -409,7 +415,7 @@ def plot_probe_direction(
 
     heatmap = heatmap_flat.reshape(grid_size, grid_size)
     image_path = Path(image_base_path) / meta["image_files"][bg_idx]
-    return plot_probe_heatmap(image_path, heatmap, mode=mode, ax=ax)
+    return plot_probe_heatmap(image_path, heatmap, mode=mode, alpha=alpha, gamma=gamma, ax=ax)
 
 
 def plot_probe_heatmap(
@@ -417,11 +423,19 @@ def plot_probe_heatmap(
     heatmap: torch.Tensor,
     *,
     mode: str = "signed",
+    alpha: float = 0.8,
+    gamma: float = 0.4,
     upsample_size: tuple[int, int] | None = None,
     ax=None,
 ):
     """
     Overlay a spatial probe heatmap on an image.
+
+    Per-pixel alpha is proportional to the activation magnitude, so
+    patches with weak activation are transparent and the original image
+    shows through.  A gamma curve (``|value|^gamma``) compresses the
+    low end upward, making moderate activations visible without
+    distorting the relative ordering.
 
     :param image_path: Path to the original image.
     :type image_path: str | Path
@@ -430,6 +444,12 @@ def plot_probe_heatmap(
     :param mode: ``"signed"`` (``RdBu_r``, range ``[-1, 1]``) or
         ``"abs"`` (``hot``, range ``[0, 1]``).
     :type mode: str
+    :param alpha: Maximum overlay opacity (default 0.8). Actual
+        per-pixel alpha is ``|value|^gamma * alpha``.
+    :type alpha: float
+    :param gamma: Exponent for the alpha curve (default 0.4). Values
+        below 1 boost visibility of weak activations; 1.0 gives linear.
+    :type gamma: float
     :param upsample_size: ``(H, W)`` target for upsampling.
         Defaults to the image's native size.
     :type upsample_size: tuple[int, int] | None
@@ -437,6 +457,7 @@ def plot_probe_heatmap(
     :returns: The axes with the overlay rendered.
     :rtype: matplotlib.axes.Axes
     """
+    import matplotlib.cm as cm
     import matplotlib.pyplot as plt
     from PIL import Image
     from torch.nn import functional as F
@@ -450,20 +471,31 @@ def plot_probe_heatmap(
         F.interpolate(
             heatmap.float()[None, None],
             size=upsample_size,
-            mode="nearest",
+            mode="bilinear",
+            align_corners=False,
         )
         .squeeze()
         .cpu()
+        .numpy()
     )
 
     if ax is None:
         _, ax = plt.subplots()
 
     ax.imshow(image)
+
+    mag = np.abs(heatmap_up)
+    alpha_channel = np.power(mag, gamma) * alpha
+
     if mode == "abs":
-        ax.imshow(heatmap_up.abs(), cmap="hot", alpha=0.5, vmin=0, vmax=1)
+        rgba = cm.hot(mag)
     else:
-        ax.imshow(heatmap_up, cmap="RdBu_r", alpha=0.5, vmin=-1, vmax=1)
+        normed = (heatmap_up + 1) / 2
+        rgba = cm.RdBu_r(normed)
+
+    rgba[..., 3] = alpha_channel
+
+    ax.imshow(rgba)
     ax.axis("off")
     return ax
 
@@ -476,6 +508,8 @@ def save_probe_heatmaps(
     grid_size: int,
     out_dir: str | Path,
     modes: tuple[str, ...] = ("signed", "abs"),
+    alpha: float = 0.8,
+    gamma: float = 0.4,
     layer_name: str = "",
 ) -> None:
     """
@@ -496,6 +530,8 @@ def save_probe_heatmaps(
     :type out_dir: str | Path
     :param modes: Rendering modes to save (``"signed"`` and/or ``"abs"``).
     :type modes: tuple[str, ...]
+    :param alpha: Maximum overlay opacity (passed to :func:`plot_probe_heatmap`)
+    :type alpha: float
     :param layer_name: Optional prefix for filenames (e.g. ``"linear_2"``).
     :type layer_name: str
     """
@@ -510,7 +546,7 @@ def save_probe_heatmaps(
         heatmap = projection[:, i].reshape(grid_size, grid_size)
         for mode in modes:
             fig, ax = plt.subplots()
-            plot_probe_heatmap(image_path, heatmap, mode=mode, ax=ax)
+            plot_probe_heatmap(image_path, heatmap, mode=mode, alpha=alpha, gamma=gamma, ax=ax)
             fig.savefig(
                 out_dir / f"{prefix}{image_stem}_dir{dir_idx}_{mode}.png",
                 bbox_inches="tight",
