@@ -370,6 +370,7 @@ def topk_botk_summary(
     level: str = "joint",
     threshold: float = 0.7,
     k: int = 10,
+    group_by: str = "category",
     tokenizer=None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
@@ -390,16 +391,21 @@ def topk_botk_summary(
     :type threshold: float
     :param k: Number of top/bottom tokens to aggregate over
     :type k: int
+    :param group_by: ``"category"`` (default) pools all directions;
+        ``"direction"`` returns per-direction rows with extra
+        ``layer`` and ``direction`` columns.  Only applies to
+        ``level="individual"``.
+    :type group_by: str
     :param tokenizer: HuggingFace tokenizer for decoding token IDs
     :returns: ``(topk_df, botk_df)`` each with columns: token_id, token,
-        count, mean_delta, mean_prob_orig, mean_prob_ablated
+        count, frequency, mean_delta, mean_prob_orig, mean_prob_ablated
+        (plus layer, direction when ``group_by="direction"``)
     :rtype: tuple[pd.DataFrame, pd.DataFrame]
     """
     topk_key = f"topk_{baseline}"
     botk_key = f"botk_{baseline}"
 
-    def _aggregate(tensor: torch.Tensor) -> pd.DataFrame:
-        # (n_images, 4, K) -> channels: token_idx, logit_delta, prob_orig, prob_ablated
+    def _aggregate(tensor: torch.Tensor, prefix: dict | None = None) -> pd.DataFrame:
         n_images = tensor.shape[0]
         K = min(k, tensor.shape[2])
         token_ids = tensor[:, 0, :K].long().reshape(-1).tolist()
@@ -417,7 +423,10 @@ def topk_botk_summary(
         rows = []
         for tid, v in sorted(acc.items(), key=lambda x: -x[1]["count"]):
             token_str = tokenizer.decode([tid]) if tokenizer else str(tid)
-            rows.append({
+            row = {}
+            if prefix:
+                row.update(prefix)
+            row.update({
                 "token_id": tid,
                 "token": token_str,
                 "count": v["count"],
@@ -426,6 +435,7 @@ def topk_botk_summary(
                 "mean_prob_orig": v["po_sum"] / v["count"],
                 "mean_prob_ablated": v["pa_sum"] / v["count"],
             })
+            rows.append(row)
         return pd.DataFrame(rows)
 
     data = abl[category]
@@ -434,11 +444,27 @@ def topk_botk_summary(
         set_key = f"active_{threshold}"
         sets = data["joint"]["sets"]
         layers = list(sets[set_key].keys())
-        # Use last layer (most downstream)
         layer = layers[-1]
         jdl = data["joint_delta_logits"][set_key][layer]
         top_df = _aggregate(jdl[topk_key])
         bot_df = _aggregate(jdl[botk_key])
+    elif group_by == "direction":
+        dl = data["delta_logits"]
+        layers = _layer_names(abl)
+        dir_list = _direction_list(abl, category)
+        top_parts = []
+        bot_parts = []
+        for layer in layers:
+            layer_dl = dl if layer == "proj" else dl.get(layer, {})
+            for d_idx in dir_list[layer]:
+                d_data = layer_dl.get(d_idx, {})
+                prefix = {"layer": layer, "direction": d_idx}
+                if topk_key in d_data:
+                    top_parts.append(_aggregate(d_data[topk_key], prefix))
+                if botk_key in d_data:
+                    bot_parts.append(_aggregate(d_data[botk_key], prefix))
+        top_df = pd.concat(top_parts, ignore_index=True) if top_parts else pd.DataFrame()
+        bot_df = pd.concat(bot_parts, ignore_index=True) if bot_parts else pd.DataFrame()
     else:
         dl = data["delta_logits"]
         layers = _layer_names(abl)
