@@ -249,10 +249,11 @@ def gold_prob_summary(
     baseline: str = "cat",
     level: str = "joint",
     threshold: float = 0.7,
+    group_by: str = "category",
     representation: str = "multiplier",
 ) -> pd.DataFrame:
     """
-    Gold log-prob change distribution per category.
+    Gold log-prob change distribution.
 
     By default reports probability multipliers (e.g. 0.6 means gold
     token probability became 60% of original after ablation).  Set
@@ -264,20 +265,31 @@ def gold_prob_summary(
     :param baseline: Ablation baseline
     :type baseline: str
     :param level: ``"joint"`` for joint ablation, ``"individual"`` for
-        per-direction (returns median across directions)
+        per-direction results
     :type level: str
     :param threshold: Binarisation threshold (only for ``level="joint"``)
     :type threshold: float
+    :param group_by: ``"category"`` (default) summarises across
+        directions; ``"direction"`` returns one row per direction
+        with distribution stats across images.  Only applies to
+        ``level="individual"``.
+    :type group_by: str
     :param representation: ``"multiplier"`` (default) — probability
         ratio after/before; ``"pct"`` — percentage change;
         ``"nats"`` — raw log-prob delta
     :type representation: str
     :returns: DataFrame with columns: category, layer, mean, median, std,
-        q25, q75, min, max, n_images
+        q25, q75, min, max, n_images (plus direction when
+        ``group_by="direction"``)
     :rtype: pd.DataFrame
     """
     rows = []
     key = f"delta_gold_prob_{baseline}"
+
+    def _convert(vals):
+        if representation != "nats":
+            return delta_to_prob_change(vals, mode=representation)
+        return vals
 
     for cat, data in sorted(abl.items()):
         if level == "joint":
@@ -287,9 +299,25 @@ def gold_prob_summary(
                 continue
             for layer in sets[set_key]:
                 vals = np.array(sets[set_key][layer][key])
-                if representation != "nats":
-                    vals = delta_to_prob_change(vals, mode=representation)
-                rows.append(_dist_row(cat, layer, vals))
+                rows.append(_dist_row(cat, layer, _convert(vals)))
+        elif group_by == "direction":
+            dl = data.get("delta_logits", {})
+            layers = _layer_names(abl)
+            dir_list = _direction_list(abl, cat)
+            for layer in layers:
+                layer_dl = _get_layer_dl(dl, layer)
+                for d_idx in dir_list[layer]:
+                    d_data = layer_dl.get(d_idx, {})
+                    vals = d_data.get(key)
+                    if vals is None:
+                        continue
+                    if isinstance(vals, torch.Tensor):
+                        vals = vals.numpy()
+                    else:
+                        vals = np.array(vals)
+                    row = _dist_row(cat, layer, _convert(vals))
+                    row["direction"] = d_idx
+                    rows.append(row)
         else:
             dl = data.get("delta_logits", {})
             layers = _layer_names(abl)
@@ -308,9 +336,7 @@ def gold_prob_summary(
                         all_medians.append(np.median(vals))
                 if all_medians:
                     arr = np.array(all_medians)
-                    if representation != "nats":
-                        arr = delta_to_prob_change(arr, mode=representation)
-                    rows.append(_dist_row(cat, layer, arr))
+                    rows.append(_dist_row(cat, layer, _convert(arr)))
 
     return pd.DataFrame(rows)
 
