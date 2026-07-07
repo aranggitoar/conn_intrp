@@ -742,78 +742,132 @@ def kl_budget(
     threshold: float = 0.7,
     baseline: str = "cat",
     budget_baseline: str = "global",
+    level: str = "joint",
 ) -> pd.DataFrame:
     """
-    Active-set KL as a fraction of total-layer KL budget.
+    KL as a fraction of total-layer KL budget.
 
     Requires ``total_ablation.json`` in the run directory (from
     :func:`~conn_intrp.ablation.run_total_ablation`).
 
-    Reports both ratio-of-means (headline number, weighted toward
-    high-KL images) and per-image ratio distribution (median, IQR)
-    for a more complete picture.
+    At ``level="joint"``, reports the active-set KL (from joint
+    ablation) as a fraction of total-layer KL, with per-image ratio
+    distribution.  At ``level="individual"``, reports each direction's
+    individual ablation KL as a fraction of total-layer KL.
 
     :param abl: Loaded ablation results from :func:`load_ablation`
     :type abl: dict
     :param threshold: Binarisation threshold for the active set
+        (only for ``level="joint"``)
     :type threshold: float
-    :param baseline: Ablation baseline for the active-set KL
+    :param baseline: Ablation baseline for the numerator KL
     :type baseline: str
     :param budget_baseline: Which total ablation to use as budget
         denominator — ``"global"`` (recommended, no OOD spoofing) or
         ``"zero"``
     :type budget_baseline: str
-    :returns: DataFrame with columns: category, layer, n_active, n_total,
-        dir_frac, active_kl, budget_kl, budget_frac, efficiency,
-        spoofing_ratio, per_image_median, per_image_q25, per_image_q75
+    :param level: ``"joint"`` for active-set KL budget, ``"individual"``
+        for per-direction KL budget
+    :type level: str
+    :returns: DataFrame with budget fraction columns.  ``level="joint"``
+        includes efficiency and per-image distribution;
+        ``level="individual"`` includes direction column.
     :rtype: pd.DataFrame
     """
-    set_key = f"active_{threshold}"
-    kl_key = f"kl_{baseline}"
     budget_key = f"kl_{budget_baseline}"
-
     rows = []
-    for cat, data in sorted(abl.items()):
-        total = data.get("total")
-        sets = data.get("joint", {}).get("sets", {})
-        if total is None or set_key not in sets:
-            continue
 
-        for layer in sets[set_key]:
-            if layer not in total.get("layers", {}):
+    if level == "individual":
+        kl_div_key = f"kl_div_{baseline}"
+        for cat, data in sorted(abl.items()):
+            total = data.get("total")
+            if total is None:
+                continue
+            dl = data.get("delta_logits", {})
+            layers = _layer_names(abl)
+            dir_list = _direction_list(abl, cat)
+
+            for layer in layers:
+                if layer not in total.get("layers", {}):
+                    continue
+                budget_kl = np.array(total["layers"][layer][budget_key])
+                budget_mean = budget_kl.mean()
+                n_total = total["n_directions"][layer]
+                layer_dl = _get_layer_dl(dl, layer)
+
+                for d_idx in dir_list[layer]:
+                    d_data = layer_dl.get(d_idx, {})
+                    kl_vals = d_data.get(kl_div_key)
+                    if kl_vals is None:
+                        continue
+                    if isinstance(kl_vals, torch.Tensor):
+                        dir_kl = np.array(kl_vals.numpy())
+                    else:
+                        dir_kl = np.array(kl_vals)
+
+                    dir_mean = dir_kl.mean()
+                    budget_frac = dir_mean / budget_mean if budget_mean > 0 else float("inf")
+
+                    safe = budget_kl > 1e-8
+                    per_image = dir_kl[safe] / budget_kl[safe]
+
+                    rows.append({
+                        "category": cat,
+                        "layer": layer,
+                        "direction": d_idx,
+                        "n_total": n_total,
+                        "dir_kl": dir_mean,
+                        "budget_kl": budget_mean,
+                        "budget_frac": budget_frac,
+                        "per_image_median": np.median(per_image) if len(per_image) > 0 else float("nan"),
+                        "per_image_q25": np.percentile(per_image, 25) if len(per_image) > 0 else float("nan"),
+                        "per_image_q75": np.percentile(per_image, 75) if len(per_image) > 0 else float("nan"),
+                    })
+    else:
+        set_key = f"active_{threshold}"
+        kl_key = f"kl_{baseline}"
+
+        for cat, data in sorted(abl.items()):
+            total = data.get("total")
+            sets = data.get("joint", {}).get("sets", {})
+            if total is None or set_key not in sets:
                 continue
 
-            act = sets[set_key][layer]
-            act_kl = np.array(act[kl_key])
-            budget_kl = np.array(total["layers"][layer][budget_key])
-            zero_kl = np.array(total["layers"][layer]["kl_zero"])
-            global_kl = np.array(total["layers"][layer]["kl_global"])
+            for layer in sets[set_key]:
+                if layer not in total.get("layers", {}):
+                    continue
 
-            n_active = act["n_directions"]
-            n_total = total["n_directions"][layer]
-            dir_frac = n_active / n_total
+                act = sets[set_key][layer]
+                act_kl = np.array(act[kl_key])
+                budget_kl = np.array(total["layers"][layer][budget_key])
+                zero_kl = np.array(total["layers"][layer]["kl_zero"])
+                global_kl = np.array(total["layers"][layer]["kl_global"])
 
-            act_mean = act_kl.mean()
-            budget_mean = budget_kl.mean()
-            budget_frac = act_mean / budget_mean if budget_mean > 0 else float("inf")
+                n_active = act["n_directions"]
+                n_total = total["n_directions"][layer]
+                dir_frac = n_active / n_total
 
-            safe = budget_kl > 1e-8
-            per_image = act_kl[safe] / budget_kl[safe]
+                act_mean = act_kl.mean()
+                budget_mean = budget_kl.mean()
+                budget_frac = act_mean / budget_mean if budget_mean > 0 else float("inf")
 
-            rows.append({
-                "category": cat,
-                "layer": layer,
-                "n_active": n_active,
-                "n_total": n_total,
-                "dir_frac": dir_frac,
-                "active_kl": act_mean,
-                "budget_kl": budget_mean,
-                "budget_frac": budget_frac,
-                "efficiency": budget_frac / dir_frac if dir_frac > 0 else float("inf"),
-                "spoofing_ratio": zero_kl.mean() / global_kl.mean() if global_kl.mean() > 0 else float("inf"),
-                "per_image_median": np.median(per_image) if len(per_image) > 0 else float("nan"),
-                "per_image_q25": np.percentile(per_image, 25) if len(per_image) > 0 else float("nan"),
-                "per_image_q75": np.percentile(per_image, 75) if len(per_image) > 0 else float("nan"),
-            })
+                safe = budget_kl > 1e-8
+                per_image = act_kl[safe] / budget_kl[safe]
+
+                rows.append({
+                    "category": cat,
+                    "layer": layer,
+                    "n_active": n_active,
+                    "n_total": n_total,
+                    "dir_frac": dir_frac,
+                    "active_kl": act_mean,
+                    "budget_kl": budget_mean,
+                    "budget_frac": budget_frac,
+                    "efficiency": budget_frac / dir_frac if dir_frac > 0 else float("inf"),
+                    "spoofing_ratio": zero_kl.mean() / global_kl.mean() if global_kl.mean() > 0 else float("inf"),
+                    "per_image_median": np.median(per_image) if len(per_image) > 0 else float("nan"),
+                    "per_image_q25": np.percentile(per_image, 25) if len(per_image) > 0 else float("nan"),
+                    "per_image_q75": np.percentile(per_image, 75) if len(per_image) > 0 else float("nan"),
+                })
 
     return pd.DataFrame(rows)
