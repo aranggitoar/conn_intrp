@@ -30,6 +30,7 @@ Main Functions:
     run_total_ablation: Zero/global-mean ablation of all directions for total KL budget.
 """
 
+import json
 import math
 from pathlib import Path
 
@@ -473,11 +474,22 @@ def run_ablation(
     tasks = [(ln, d) for ln, dirs in directions_to_ablate.items() for d in dirs]
     n_tasks = len(tasks)
 
+    # Merge new directions with any existing ones in metadata
+    merged_directions = dict(directions_to_ablate)
+    meta_path = run_dir / "metadata.json"
+    if meta_path.exists():
+        with open(meta_path) as f:
+            old_meta = json.load(f)
+        for ln, dirs in old_meta.get("directions", {}).items():
+            existing = set(merged_directions.get(ln, []))
+            existing.update(dirs)
+            merged_directions[ln] = sorted(existing)
+
     update_metadata(
         run_dir,
         dict(
             model=adapter.model_name,
-            directions=directions_to_ablate,
+            directions=merged_directions,
             batch_size=batch_size,
             K=K,
             rand_seed=rand_seed,
@@ -486,18 +498,32 @@ def run_ablation(
         ),
     )
 
-    completed_ablation = {
-        name
-        for name in data_categorized
-        if (run_dir / fs_safe(name) / "anls_summary.json").exists()
-    }
-    if completed_ablation:
-        print(f"Resuming ablation: skipping {len(completed_ablation)} completed categories")
-
     for name, data in tqdm(data_categorized.items(), desc="Ablation + ANLS"):
-        if name in completed_ablation:
-            print(f'  Skipping "{name}" (results exist)')
+        cat_dir = run_dir / fs_safe(name)
+        cat_dir.mkdir(parents=True, exist_ok=True)
+
+        # Per-direction resume: load existing results and skip done directions
+        existing_dirs_set = set()
+        old_delta = None
+        old_summary = None
+        summary_path = cat_dir / "anls_summary.json"
+        if summary_path.exists():
+            with open(summary_path) as f:
+                old_summary = json.load(f)
+            for ln, dirs in old_summary.get("directions", {}).items():
+                for d in dirs:
+                    existing_dirs_set.add((ln, d))
+
+        skip_tasks = {i for i, (ln, d) in enumerate(tasks) if (ln, d) in existing_dirs_set}
+
+        if len(skip_tasks) == n_tasks:
+            print(f'  Skipping "{name}" (all directions already done)')
             continue
+
+        if skip_tasks:
+            n_new = n_tasks - len(skip_tasks)
+            print(f'  Running {n_new} new directions for "{name}" ({len(skip_tasks)} already done)')
+            old_delta = torch.load(cat_dir / "delta_logits.pt", weights_only=False)
 
         length = len(data)
         cat_a_star = per_category_a_star[name]
@@ -566,6 +592,8 @@ def run_ablation(
             stacked_attn = attention_mask.repeat(4, 1)
 
             for t_idx, (layer_name, dir_idx) in enumerate(tasks):
+                if t_idx in skip_tasks:
+                    continue
                 layer = svd_layer_map[layer_name]
                 u_d = layer.U[:, dir_idx].to(batch_coeffs[layer_name].dtype)
                 orig_d = batch_coeffs[layer_name][..., dir_idx]
@@ -655,15 +683,14 @@ def run_ablation(
                     for targets, pred in zip(targets_batch, preds_parts[bi]):
                         a["nls"][t_idx].append(best_anls(pred, targets))
 
-        # --- Save per-category results ---
-        cat_dir = run_dir / fs_safe(name)
-        cat_dir.mkdir(parents=True, exist_ok=True)
-
+        # --- Save per-category results (merge with existing if resuming) ---
         np.save(cat_dir / "nls_original.npy", np.array(nls_original))
 
         layer_delta = {}
         layer_nls = {}
         for t_idx, (ln, dir_idx) in enumerate(tasks):
+            if t_idx in skip_tasks:
+                continue
             if ln not in layer_delta:
                 layer_delta[ln] = {}
                 layer_nls[ln] = {
@@ -687,11 +714,40 @@ def run_ablation(
             for bl in _BASELINE_KEYS:
                 layer_nls[ln][bl].append(sum(acc[bl]["nls"][t_idx]) / length)
 
+        # Merge old direction results into new
+        _ANLS_BL_KEYS = {
+            "cat": "anls_ablated_per_category_mean",
+            "global": "anls_ablated_global_mean",
+            "zero": "anls_ablated_zero_mean",
+            "rand": "anls_ablated_random",
+        }
+        if old_delta is not None and old_summary is not None:
+            for ln in old_delta:
+                if ln == "_schema":
+                    continue
+                if ln not in layer_delta:
+                    layer_delta[ln] = {}
+                    layer_nls[ln] = {
+                        "dirs": [],
+                        "cat": [],
+                        "global": [],
+                        "zero": [],
+                        "rand": [],
+                    }
+                old_dirs = old_summary["directions"].get(ln, [])
+                for i, d_idx in enumerate(old_dirs):
+                    layer_delta[ln][d_idx] = old_delta[ln][d_idx]
+                    layer_nls[ln]["dirs"].append(d_idx)
+                    for bl in _BASELINE_KEYS:
+                        layer_nls[ln][bl].append(
+                            old_summary[_ANLS_BL_KEYS[bl]][ln][i]
+                        )
+
         for bl in _BASELINE_KEYS:
             np.save(
                 cat_dir / f"nls_ablated_{bl}.npy",
                 {
-                    ln: [acc[bl]["nls"][t] for t, (l, _) in enumerate(tasks) if l == ln]
+                    ln: [acc[bl]["nls"][t] for t, (l, _) in enumerate(tasks) if l == ln and t not in skip_tasks]
                     for ln in layer_nls
                 },
                 allow_pickle=True,
