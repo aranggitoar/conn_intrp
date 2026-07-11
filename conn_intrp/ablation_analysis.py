@@ -225,12 +225,10 @@ def cumulative_kl(
                 if cat_mask is not None and d_idx < len(cat_mask):
                     mask_w = cat_mask[d_idx].item()
 
-            rows.append({
-                "layer": layer,
-                "direction": d_idx,
-                "kl": mean_kl,
-                "mask_weight": mask_w,
-            })
+            row = {"layer": layer, "direction": d_idx, "kl": mean_kl}
+            if dm_masks is not None:
+                row["mask_weight"] = mask_w
+            rows.append(row)
 
     df = pd.DataFrame(rows)
     if df.empty:
