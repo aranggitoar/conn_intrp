@@ -64,6 +64,7 @@ from .dm_analysis import (
     jaccard_matrix,
     load_dm_masks,
     mask_agreement,
+    mask_baseline_table,
     overlap_matrix,
     random_baseline_masks,
     random_continuous_masks,
@@ -127,6 +128,7 @@ __all__ = [
     "random_continuous_masks",
     "random_mask",
     "mask_agreement",
+    "mask_baseline_table",
     # ablation
     "compute_category_means",
     "load_all_coefficients",

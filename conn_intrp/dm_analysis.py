@@ -22,6 +22,7 @@ Main Functions:
     overlap_matrix: Category x category survivor intersection counts
     jaccard_matrix: Category x category Jaccard similarity of survivor sets
     distribution: Bucket breakdown of mask weight distribution
+    mask_baseline_table: Optimized vs random mask KL across thresholds
 """
 
 import json
@@ -519,3 +520,56 @@ def compare_categories(
         f"only_{cat_a}": sorted(sa - sb),
         f"only_{cat_b}": sorted(sb - sa),
     }
+
+
+def mask_baseline_table(
+    run_dir: str | Path,
+) -> pd.DataFrame:
+    """
+    Optimized vs random mask KL across thresholds.
+
+    Loads ``baseline_kl.json`` from a DM run directory and returns a
+    summary DataFrame comparing the optimized mask KL to random mask
+    KL at each binarisation threshold.
+
+    :param run_dir: DM run output directory
+    :type run_dir: str | Path
+    :returns: DataFrame with columns: category, layer, threshold,
+        n_survivors, optimized_kl, random_kl, ratio
+    :rtype: pd.DataFrame
+    """
+    run_dir = Path(run_dir)
+    with open(run_dir / "baseline_kl.json") as f:
+        data = json.load(f)
+
+    rows = []
+    for cat, cat_data in sorted(data.items()):
+        for thr_key, thr_data in sorted(cat_data.items()):
+            if thr_key == "continuous":
+                for layer, kl in thr_data["optimized_kl"].items():
+                    rows.append({
+                        "category": cat,
+                        "layer": layer,
+                        "threshold": "continuous",
+                        "n_survivors": None,
+                        "optimized_kl": kl,
+                        "random_kl": None,
+                        "ratio": None,
+                    })
+                continue
+            for layer in thr_data.get("optimized_kl", {}):
+                opt_kl = thr_data["optimized_kl"][layer]
+                rand_kl = thr_data["random_kl_mean"][layer]
+                n_surv = thr_data["survivors"][layer]
+                ratio = opt_kl / rand_kl if rand_kl > 0 else float("inf")
+                rows.append({
+                    "category": cat,
+                    "layer": layer,
+                    "threshold": float(thr_key),
+                    "n_survivors": n_surv,
+                    "optimized_kl": opt_kl,
+                    "random_kl": rand_kl,
+                    "ratio": ratio,
+                })
+
+    return pd.DataFrame(rows)
