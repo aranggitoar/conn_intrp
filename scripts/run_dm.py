@@ -2,8 +2,10 @@
 Run directional masking for a specific model.
 
 Usage:
-    python scripts/run_dm.py              # SmolVLM2 (default)
+    python scripts/run_dm.py              # SmolVLM2 + docvqa (default)
     python scripts/run_dm.py --internvl   # InternVL3.5
+    python scripts/run_dm.py --dataset okvqa
+    python scripts/run_dm.py --dataset okvqa --dataset-path /path/to/okvqa
     python scripts/run_dm.py --resume     # resume latest run
     python scripts/run_dm.py --categories "table/list" "figure/list"
     python scripts/run_dm.py --max-samples 20  # quick profiling run
@@ -12,7 +14,7 @@ Usage:
 import argparse
 from pathlib import Path
 
-from conn_intrp.data import filter_categories, load_docvqa
+from conn_intrp.data import DATASETS, filter_categories, load_dataset
 from conn_intrp.dm import run_dm
 from conn_intrp.output import make_run_dir
 
@@ -20,6 +22,11 @@ from conn_intrp.output import make_run_dir
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--internvl", action="store_true")
+    parser.add_argument(
+        "--dataset", type=str, default="docvqa", choices=list(DATASETS),
+        help="Dataset to use (default: docvqa)",
+    )
+    parser.add_argument("--dataset-path", type=str, default=None, help="Override default dataset path")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--categories", type=str, nargs="+", default=None)
     parser.add_argument("--max-samples", type=int, default=None)
@@ -33,7 +40,7 @@ def main():
         "--target-updates",
         type=int,
         default=None,
-        help="Target gradient updates per epoch; step is " "derived per category from its size.",
+        help="Target gradient updates per epoch; step is derived per category from its size.",
     )
     parser.add_argument(
         "--max-step", type=int, default=None, help="Cap auto-computed step (GPU memory limit)."
@@ -47,12 +54,11 @@ def main():
         default=0.02,
         help="Convergence threshold as fraction of n_dirs.",
     )
-    parser.add_argument("--dataset", type=str, default="dataset/docVQA")
     parser.add_argument("--output", type=str, default="outputs")
     args = parser.parse_args()
 
-    image_base_path = Path(args.dataset)
-    _, data_categorized = load_docvqa(image_base_path / "train_v1.0_withQT.json")
+    image_base_path = Path(args.dataset_path or DATASETS[args.dataset]["default_path"])
+    _, data_categorized = load_dataset(args.dataset, "train", args.dataset_path)
     data_categorized = filter_categories(
         data_categorized,
         categories=args.categories,

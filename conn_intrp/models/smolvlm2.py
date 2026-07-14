@@ -37,6 +37,8 @@ class SmolVLM2Adapter(ModelAdapter):
     :type repo_id: str
     :param dtype: Model compute dtype.
     :type dtype: torch.dtype
+    :param prompt: System prompt prepended to each question.
+    :type prompt: str
     :param model_kwargs: Extra keyword arguments forwarded to
         ``AutoModelForImageTextToText.from_pretrained``.
     """
@@ -46,10 +48,12 @@ class SmolVLM2Adapter(ModelAdapter):
         repo_id: str,
         dtype: torch.dtype = torch.float16,
         cache_images: bool = True,
+        prompt: str = HARNESS_PROMPT,
         **model_kwargs,
     ):
         self.repo_id = repo_id
         self.compute_dtype = dtype
+        self.prompt = prompt
 
         self.processor = AutoProcessor.from_pretrained(repo_id, trust_remote_code=True)
         self.processor.image_processor.do_image_splitting = False
@@ -121,7 +125,7 @@ class SmolVLM2Adapter(ModelAdapter):
                     {
                         "role": "user",
                         "content": [
-                            {"type": "text", "text": HARNESS_PROMPT},
+                            {"type": "text", "text": self.prompt},
                             {"type": "image", "image": self._load_image(img_path)},
                             {"type": "text", "text": datum["question"]},
                         ],

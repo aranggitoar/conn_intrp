@@ -54,7 +54,16 @@ from .ablation_analysis import (
 )
 from .cka import linear_cka
 from .config import DirectionalMaskingConfig
-from .data import HARNESS_PROMPT, best_anls, filter_categories, load_docvqa, relaxed_anls
+from .data import (
+    DATASETS,
+    HARNESS_PROMPT,
+    best_anls,
+    filter_categories,
+    load_dataset,
+    load_docvqa,
+    load_okvqa,
+    relaxed_anls,
+)
 from .dm import evaluate_dm_baselines, evaluate_mask_kl, evaluate_masks_kl, run_dm
 from .dm_analysis import (
     compare_categories,
@@ -96,7 +105,10 @@ __all__ = [
     # config
     "DirectionalMaskingConfig",
     # data
+    "DATASETS",
+    "load_dataset",
     "load_docvqa",
+    "load_okvqa",
     "HARNESS_PROMPT",
     "best_anls",
     "relaxed_anls",

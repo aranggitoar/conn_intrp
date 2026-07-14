@@ -198,6 +198,8 @@ class InternVLAdapter(ModelAdapter):
     :type repo_id_conv: str | None
     :param dtype: Model compute dtype.
     :type dtype: torch.dtype
+    :param prompt: System prompt prepended to each question.
+    :type prompt: str
     :param model_kwargs: Extra keyword arguments forwarded to
         ``AutoModelForImageTextToText.from_pretrained``.
     """
@@ -208,10 +210,12 @@ class InternVLAdapter(ModelAdapter):
         repo_id_conv: str | None = None,
         dtype: torch.dtype = torch.bfloat16,
         cache_images: bool = True,
+        prompt: str = HARNESS_PROMPT,
         **model_kwargs,
     ):
         self.repo_id_hf = repo_id_hf
         self.compute_dtype = dtype
+        self.prompt = prompt
 
         self.processor = AutoProcessor.from_pretrained(repo_id_hf, trust_remote_code=True)
         self.processor.image_processor.max_patches = 1
@@ -301,7 +305,7 @@ class InternVLAdapter(ModelAdapter):
                     {
                         "role": "system",
                         "content": [
-                            {"type": "text", "text": HARNESS_PROMPT},
+                            {"type": "text", "text": self.prompt},
                         ],
                     },
                     {

@@ -4,6 +4,7 @@ Run spatial probe for a specific model.
 Usage:
     python scripts/run_spatial_probe.py --directions 23 70 255
     python scripts/run_spatial_probe.py --internvl --directions 23 70 255
+    python scripts/run_spatial_probe.py --dataset okvqa --directions 23 70 255
     python scripts/run_spatial_probe.py --resume --directions 23 70 255
     python scripts/run_spatial_probe.py --categories "table/list" --directions 23 70
     python scripts/run_spatial_probe.py --max-samples 20 --directions 23 70
@@ -12,7 +13,7 @@ Usage:
 import argparse
 from pathlib import Path
 
-from conn_intrp.data import filter_categories, load_docvqa
+from conn_intrp.data import DATASETS, filter_categories, load_dataset
 from conn_intrp.output import make_run_dir
 from conn_intrp.spatial_probe import run_spatial_probe
 
@@ -20,6 +21,11 @@ from conn_intrp.spatial_probe import run_spatial_probe
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--internvl", action="store_true")
+    parser.add_argument(
+        "--dataset", type=str, default="docvqa", choices=list(DATASETS),
+        help="Dataset to use (default: docvqa)",
+    )
+    parser.add_argument("--dataset-path", type=str, default=None, help="Override default dataset path")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--categories", type=str, nargs="+", default=None)
     parser.add_argument("--max-samples", type=int, default=None)
@@ -30,12 +36,11 @@ def main():
         required=True,
     )
     parser.add_argument("--batch-size", type=int, default=None)
-    parser.add_argument("--dataset", type=str, default="dataset/docVQA")
     parser.add_argument("--output", type=str, default="outputs")
     args = parser.parse_args()
 
-    image_base_path = Path(args.dataset)
-    _, data_categorized = load_docvqa(image_base_path / "train_v1.0_withQT.json")
+    image_base_path = Path(args.dataset_path or DATASETS[args.dataset]["default_path"])
+    _, data_categorized = load_dataset(args.dataset, "train", args.dataset_path)
     data_categorized = filter_categories(
         data_categorized,
         categories=args.categories,

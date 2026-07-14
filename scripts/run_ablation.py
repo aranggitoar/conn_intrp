@@ -2,11 +2,12 @@
 Run mean ablation + ANLS + Δlogit for a specific model.
 
 Means are computed on the training split; ANLS is scored on the
-validation split (``val_v1.0_withQT.json``).
+validation split.
 
 Usage:
-    python scripts/run_ablation.py                          # SmolVLM2 (default)
+    python scripts/run_ablation.py                          # SmolVLM2 + docvqa (default)
     python scripts/run_ablation.py --internvl               # InternVL3.5
+    python scripts/run_ablation.py --dataset okvqa
     python scripts/run_ablation.py --directions 23 70 255   # specific directions
     python scripts/run_ablation.py --resume                 # resume latest run
     python scripts/run_ablation.py --categories "table/list"
@@ -17,13 +18,18 @@ import argparse
 from pathlib import Path
 
 from conn_intrp.ablation import compute_category_means, run_ablation
-from conn_intrp.data import filter_categories, load_docvqa
+from conn_intrp.data import DATASETS, filter_categories, load_dataset
 from conn_intrp.output import make_run_dir
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--internvl", action="store_true")
+    parser.add_argument(
+        "--dataset", type=str, default="docvqa", choices=list(DATASETS),
+        help="Dataset to use (default: docvqa)",
+    )
+    parser.add_argument("--dataset-path", type=str, default=None, help="Override default dataset path")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--categories", type=str, nargs="+", default=None)
     parser.add_argument("--max-samples", type=int, default=None)
@@ -35,21 +41,12 @@ def main():
     )
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--K", type=int, default=15)
-    parser.add_argument("--dataset", type=str, default="dataset/docVQA")
-    parser.add_argument(
-        "--val-json",
-        type=str,
-        default="val_v1.0_withQT.json",
-        help="Validation JSON filename (relative to --dataset).",
-    )
     parser.add_argument("--output", type=str, default="outputs")
     args = parser.parse_args()
 
-    image_base_path = Path(args.dataset)
-
-    _, train_categorized = load_docvqa(image_base_path / "train_v1.0_withQT.json")
-    val_path = image_base_path / args.val_json
-    _, val_categorized = load_docvqa(val_path)
+    image_base_path = Path(args.dataset_path or DATASETS[args.dataset]["default_path"])
+    _, train_categorized = load_dataset(args.dataset, "train", args.dataset_path)
+    _, val_categorized = load_dataset(args.dataset, "val", args.dataset_path)
 
     train_categorized = filter_categories(
         train_categorized,
