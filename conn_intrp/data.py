@@ -88,18 +88,20 @@ def load_okvqa(
         a_data = json.load(f)
 
     ann_by_qid = {a["question_id"]: a for a in a_data["annotations"]}
+    qt_names = a_data.get("question_types", {})
     data_subtype = q_data.get("data_subtype", "train2014")
 
     all_data = []
     for q in q_data["questions"]:
         qid = q["question_id"]
         ann = ann_by_qid[qid]
+        qt_code = ann["question_type"]
         datum = {
             "questionId": qid,
             "question": q["question"],
             "image": f"{data_subtype}/COCO_{data_subtype}_{q['image_id']:012d}.jpg",
             "answers": [a["answer"] for a in ann["answers"]],
-            "question_type": ann["question_type"],
+            "question_type": qt_names.get(qt_code, qt_code),
         }
         all_data.append(datum)
 
@@ -186,7 +188,7 @@ DATASETS = {
         "val": lambda p: load_docvqa(p / "val_v1.0_withQT.json"),
     },
     "okvqa": {
-        "default_path": "dataset/okvqa",
+        "default_path": "dataset/OK-VQA",
         "train": lambda p: load_okvqa(
             p / "OpenEnded_mscoco_train2014_questions.json",
             p / "mscoco_train2014_annotations.json",
