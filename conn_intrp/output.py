@@ -43,6 +43,7 @@ def make_run_dir(
     base: str | Path,
     model_name: str,
     method: str,
+    dataset: str = "docvqa",
     tag: str | None = None,
     *,
     resume: bool = False,
@@ -51,8 +52,8 @@ def make_run_dir(
     Create a timestamped output directory, or resume the latest one.
 
     When *resume* is ``True``, returns the most recent existing directory
-    that matches ``{model_name}_{method}_*`` under *base*. Falls back to
-    creating a new directory if none exists.
+    that matches ``{model_name}_{dataset}_{method}_*`` under *base*.
+    Falls back to creating a new directory if none exists.
 
     :param base: Parent directory for all runs.
     :type base: str | Path
@@ -60,6 +61,8 @@ def make_run_dir(
     :type model_name: str
     :param method: Pipeline phase (e.g. ``"dm"``, ``"ablation"``).
     :type method: str
+    :param dataset: Dataset identifier (e.g. ``"docvqa"``, ``"okvqa"``).
+    :type dataset: str
     :param tag: Optional suffix for the directory name.
     :type tag: str | None
     :param resume: If ``True``, reuse the latest matching run directory.
@@ -68,13 +71,13 @@ def make_run_dir(
     :rtype: Path
     """
     if resume:
-        existing = find_latest_run(base, model_name, method)
+        existing = find_latest_run(base, model_name, method, dataset)
         if existing is not None:
             print(f"Resuming run: {existing}")
             return existing
 
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    name = f"{model_name}_{method}_{ts}"
+    name = f"{model_name}_{dataset}_{method}_{ts}"
     if tag:
         name += f"_{tag}"
     run_dir = Path(base) / name
@@ -86,11 +89,12 @@ def find_latest_run(
     base: str | Path,
     model_name: str,
     method: str,
+    dataset: str = "docvqa",
 ) -> Path | None:
     """
     Find the most recent run directory for a given model and method.
 
-    Scans *base* for directories matching ``{model_name}_{method}_*``
+    Scans *base* for directories matching ``{model_name}_{dataset}_{method}_*``
     and returns the latest by timestamp. Returns ``None`` if no match.
 
     :param base: Parent directory for all runs.
@@ -99,13 +103,15 @@ def find_latest_run(
     :type model_name: str
     :param method: Pipeline phase (e.g. ``"dm"``, ``"ablation"``).
     :type method: str
+    :param dataset: Dataset identifier (e.g. ``"docvqa"``, ``"okvqa"``).
+    :type dataset: str
     :returns: Path to the latest matching run directory, or ``None``.
     :rtype: Path | None
     """
     base = Path(base)
     if not base.exists():
         return None
-    prefix = f"{model_name}_{method}_"
+    prefix = f"{model_name}_{dataset}_{method}_"
     candidates = sorted(
         (d for d in base.iterdir() if d.is_dir() and d.name.startswith(prefix)),
         key=lambda d: d.name,

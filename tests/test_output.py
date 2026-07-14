@@ -43,7 +43,7 @@ def test_make_serializable_nested():
 def test_make_run_dir(tmp_path):
     run_dir = make_run_dir(tmp_path, "smolvlm2", "dm")
     assert run_dir.exists()
-    assert "smolvlm2_dm_" in run_dir.name
+    assert "smolvlm2_docvqa_dm_" in run_dir.name
 
 
 def test_make_run_dir_with_tag(tmp_path):

@@ -85,6 +85,7 @@ def main():
         Path(args.output),
         adapter.model_name,
         "dm",
+        dataset=args.dataset,
         resume=args.resume,
     )
 

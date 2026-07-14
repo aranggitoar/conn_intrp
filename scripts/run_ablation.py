@@ -74,6 +74,7 @@ def main():
         Path(args.output),
         adapter.model_name,
         "ablation",
+        dataset=args.dataset,
         resume=args.resume,
     )
     _, cat_means, global_mean = compute_category_means(

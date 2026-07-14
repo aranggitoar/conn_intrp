@@ -62,6 +62,7 @@ def main():
         Path(args.output),
         adapter.model_name,
         "probe",
+        dataset=args.dataset,
         resume=args.resume,
     )
 
