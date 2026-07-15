@@ -280,21 +280,24 @@ class ModelAdapter:
 
     def _read_image(self, img_path: str) -> Image.Image:
         path = Path(img_path)
-        if path.exists():
+        try:
             return Image.open(path).convert("RGB")
-        # Fallback: look for a zip named after the parent dir
+        except OSError:
+            pass
         zip_path = path.parent.with_suffix(".zip")
-        if zip_path.exists():
-            if not hasattr(self, "_zip_cache"):
-                self._zip_cache = {}
-            if zip_path not in self._zip_cache:
+        if not hasattr(self, "_zip_cache"):
+            self._zip_cache = {}
+        if zip_path not in self._zip_cache:
+            try:
                 self._zip_cache[zip_path] = zipfile.ZipFile(zip_path)
-            zf = self._zip_cache[zip_path]
-            for candidate in [path.name, f"{path.parent.name}/{path.name}"]:
-                try:
-                    return Image.open(BytesIO(zf.read(candidate))).convert("RGB")
-                except KeyError:
-                    continue
+            except (OSError, zipfile.BadZipFile):
+                raise FileNotFoundError(f"Image not found: {img_path}")
+        zf = self._zip_cache[zip_path]
+        for candidate in [path.name, f"{path.parent.name}/{path.name}"]:
+            try:
+                return Image.open(BytesIO(zf.read(candidate))).convert("RGB")
+            except KeyError:
+                continue
         raise FileNotFoundError(f"Image not found: {img_path}")
 
     def clear_cache(self):
