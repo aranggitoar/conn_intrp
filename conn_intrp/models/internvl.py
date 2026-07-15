@@ -191,11 +191,8 @@ class InternVLAdapter(ModelAdapter):
     SVD is performed on ``linear_2``; :meth:`pre_svd_forward` runs
     the preceding layers.
 
-    :param repo_id_hf: HuggingFace model repository ID (``-HF`` variant).
-    :type repo_id_hf: str
-    :param repo_id_conv: Repository for the conversation template.
-        Defaults to *repo_id_hf* with ``"-HF"`` stripped.
-    :type repo_id_conv: str | None
+    :param model_id: HuggingFace repo ID or local path (``-HF`` variant).
+    :type model_id: str
     :param dtype: Model compute dtype.
     :type dtype: torch.dtype
     :param prompt: System prompt prepended to each question.
@@ -206,22 +203,21 @@ class InternVLAdapter(ModelAdapter):
 
     def __init__(
         self,
-        repo_id_hf: str,
-        repo_id_conv: str | None = None,
+        model_id: str,
         dtype: torch.dtype = torch.bfloat16,
         cache_images: bool = True,
         prompt: str = HARNESS_PROMPT,
         **model_kwargs,
     ):
-        self.repo_id_hf = repo_id_hf
+        self.model_id = model_id
         self.compute_dtype = dtype
         self.prompt = prompt
 
-        self.processor = AutoProcessor.from_pretrained(repo_id_hf, trust_remote_code=True)
+        self.processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
         self.processor.image_processor.max_patches = 1
         self.tokenizer = self.processor.tokenizer
         self.model = AutoModelForImageTextToText.from_pretrained(
-            repo_id_hf, dtype=dtype, trust_remote_code=True, **model_kwargs
+            model_id, dtype=dtype, trust_remote_code=True, **model_kwargs
         ).cuda()
         for param in self.model.parameters():
             param.requires_grad_(False)
@@ -278,13 +274,6 @@ class InternVLAdapter(ModelAdapter):
         hidden = self.pre_svd_forward(vision_out).to(W_masked.dtype)
         bias = self.proj_bias.to(W_masked.dtype) if self.proj_bias is not None else None
         return F.linear(hidden, W_masked, bias)
-
-    def _load_image(self, img_path: str) -> Image.Image:
-        if self.cache_images:
-            if img_path not in self._image_cache:
-                self._image_cache[img_path] = Image.open(img_path).convert("RGB")
-            return self._image_cache[img_path]
-        return Image.open(img_path).convert("RGB")
 
     def preprocess(self, batch: list[dict], image_base_path: Path) -> dict:
         """
