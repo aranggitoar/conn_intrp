@@ -67,6 +67,7 @@ from .data import (
 from .dm import evaluate_dm_baselines, evaluate_mask_kl, evaluate_masks_kl, run_dm
 from .dm_analysis import (
     compare_categories,
+    cross_dataset_overlap,
     direction_profile,
     distribution,
     gap_survivors,
@@ -79,8 +80,10 @@ from .dm_analysis import (
     random_continuous_masks,
     random_mask,
     ranked_directions,
+    shared_direction_profile,
     summary_table,
     survivors,
+    weight_correlation,
 )
 from .probe_analysis import (
     load_probe,
@@ -141,6 +144,9 @@ __all__ = [
     "random_mask",
     "mask_agreement",
     "mask_baseline_table",
+    "cross_dataset_overlap",
+    "weight_correlation",
+    "shared_direction_profile",
     # ablation
     "compute_category_means",
     "load_all_coefficients",

@@ -23,11 +23,15 @@ Main Functions:
     jaccard_matrix: Category x category Jaccard similarity of survivor sets
     distribution: Bucket breakdown of mask weight distribution
     mask_baseline_table: Optimized vs random mask KL across thresholds
+    cross_dataset_overlap: Survivor set overlap between two datasets
+    weight_correlation: Per-direction weight correlation between two datasets
+    shared_direction_profile: Shared vs unique survivor weight and breadth breakdown
 """
 
 import json
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import torch
 
@@ -571,5 +575,184 @@ def mask_baseline_table(
                     "random_kl": rand_kl,
                     "ratio": ratio,
                 })
+
+    return pd.DataFrame(rows)
+
+
+# --- Cross-dataset comparison ------------------------------------------------
+
+
+def _all_survivors(
+    masks: dict[str, dict[str, torch.Tensor]],
+    layer: str,
+    threshold: float = 0.5,
+    exclude_categories: set[str] | None = None,
+) -> set[int]:
+    s: set[int] = set()
+    for cat, m in masks[layer].items():
+        if exclude_categories and cat in exclude_categories:
+            continue
+        s.update(torch.where(m > threshold)[0].tolist())
+    return s
+
+
+def cross_dataset_overlap(
+    masks_a: dict[str, dict[str, torch.Tensor]],
+    masks_b: dict[str, dict[str, torch.Tensor]],
+    layer: str,
+    threshold: float = 0.5,
+    exclude_categories_a: set[str] | None = None,
+    exclude_categories_b: set[str] | None = None,
+) -> dict[str, float | int]:
+    """
+    Survivor set overlap between two datasets on the same layer.
+
+    :param masks_a: First dataset's masks
+    :type masks_a: dict[str, dict[str, torch.Tensor]]
+    :param masks_b: Second dataset's masks
+    :type masks_b: dict[str, dict[str, torch.Tensor]]
+    :param layer: Layer name
+    :type layer: str
+    :param threshold: Survivor threshold
+    :type threshold: float
+    :param exclude_categories_a: Categories to skip in *masks_a*
+    :type exclude_categories_a: set[str] | None
+    :param exclude_categories_b: Categories to skip in *masks_b*
+    :type exclude_categories_b: set[str] | None
+    :returns: Dict with ``survivors_a``, ``survivors_b``, ``overlap``,
+        ``jaccard``, ``b_in_a`` (fraction of B's survivors found in A),
+        ``a_in_b`` (fraction of A's survivors found in B).
+    :rtype: dict[str, float | int]
+    """
+    sa = _all_survivors(masks_a, layer, threshold, exclude_categories_a)
+    sb = _all_survivors(masks_b, layer, threshold, exclude_categories_b)
+    overlap = sa & sb
+    union = sa | sb
+    return {
+        "survivors_a": len(sa),
+        "survivors_b": len(sb),
+        "overlap": len(overlap),
+        "jaccard": len(overlap) / len(union) if union else 1.0,
+        "b_in_a": len(overlap) / len(sb) if sb else 1.0,
+        "a_in_b": len(overlap) / len(sa) if sa else 1.0,
+    }
+
+
+def weight_correlation(
+    masks_a: dict[str, dict[str, torch.Tensor]],
+    masks_b: dict[str, dict[str, torch.Tensor]],
+    layer: str,
+    exclude_categories_a: set[str] | None = None,
+    exclude_categories_b: set[str] | None = None,
+    mode: str = "mean",
+) -> dict[str, float]:
+    """
+    Per-direction weight correlation between two datasets.
+
+    Aggregates each dataset's per-category weights into a single vector
+    per direction (via *mode*), then computes Pearson and Spearman
+    correlations.
+
+    :param masks_a: First dataset's masks
+    :type masks_a: dict[str, dict[str, torch.Tensor]]
+    :param masks_b: Second dataset's masks
+    :type masks_b: dict[str, dict[str, torch.Tensor]]
+    :param layer: Layer name
+    :type layer: str
+    :param exclude_categories_a: Categories to skip in *masks_a*
+    :type exclude_categories_a: set[str] | None
+    :param exclude_categories_b: Categories to skip in *masks_b*
+    :type exclude_categories_b: set[str] | None
+    :param mode: Aggregation across categories: ``"mean"`` or ``"max"``
+    :type mode: str
+    :returns: Dict with ``pearson`` and ``spearman``
+    :rtype: dict[str, float]
+    """
+    agg = torch.mean if mode == "mean" else torch.amax
+
+    cats_a = [c for c in masks_a[layer] if not (exclude_categories_a and c in exclude_categories_a)]
+    cats_b = [c for c in masks_b[layer] if not (exclude_categories_b and c in exclude_categories_b)]
+
+    wa = agg(torch.stack([masks_a[layer][c] for c in cats_a]).float().cpu(), dim=0).numpy()
+    wb = agg(torch.stack([masks_b[layer][c] for c in cats_b]).float().cpu(), dim=0).numpy()
+
+    pearson = float(np.corrcoef(wa, wb)[0, 1])
+
+    ra = np.argsort(np.argsort(-wa)).astype(float)
+    rb = np.argsort(np.argsort(-wb)).astype(float)
+    spearman = float(np.corrcoef(ra, rb)[0, 1])
+
+    return {"pearson": pearson, "spearman": spearman}
+
+
+def shared_direction_profile(
+    masks_a: dict[str, dict[str, torch.Tensor]],
+    masks_b: dict[str, dict[str, torch.Tensor]],
+    layer: str,
+    threshold: float = 0.5,
+    exclude_categories_a: set[str] | None = None,
+    exclude_categories_b: set[str] | None = None,
+) -> pd.DataFrame:
+    """
+    Weight and category-breadth breakdown of shared vs unique survivors.
+
+    Each row is one group (shared, only_a, only_b) with:
+    - mean weight in each dataset
+    - average number of categories the directions survive in
+
+    :param masks_a: First dataset's masks
+    :type masks_a: dict[str, dict[str, torch.Tensor]]
+    :param masks_b: Second dataset's masks
+    :type masks_b: dict[str, dict[str, torch.Tensor]]
+    :param layer: Layer name
+    :type layer: str
+    :param threshold: Survivor threshold
+    :type threshold: float
+    :param exclude_categories_a: Categories to skip in *masks_a*
+    :type exclude_categories_a: set[str] | None
+    :param exclude_categories_b: Categories to skip in *masks_b*
+    :type exclude_categories_b: set[str] | None
+    :returns: DataFrame with columns: group, count, mean_weight_a,
+        mean_weight_b, avg_categories_a, avg_categories_b
+    :rtype: pd.DataFrame
+    """
+    sa = _all_survivors(masks_a, layer, threshold, exclude_categories_a)
+    sb = _all_survivors(masks_b, layer, threshold, exclude_categories_b)
+
+    cats_a = [c for c in masks_a[layer] if not (exclude_categories_a and c in exclude_categories_a)]
+    cats_b = [c for c in masks_b[layer] if not (exclude_categories_b and c in exclude_categories_b)]
+
+    wa = torch.stack([masks_a[layer][c] for c in cats_a]).float().cpu()
+    wb = torch.stack([masks_b[layer][c] for c in cats_b]).float().cpu()
+
+    avg_w_a = wa.mean(0)
+    avg_w_b = wb.mean(0)
+    cat_count_a = (wa > threshold).sum(0).float()
+    cat_count_b = (wb > threshold).sum(0).float()
+
+    groups = {
+        "shared": sorted(sa & sb),
+        "only_a": sorted(sa - sb),
+        "only_b": sorted(sb - sa),
+    }
+
+    rows = []
+    for name, dirs in groups.items():
+        if not dirs:
+            rows.append({
+                "group": name, "count": 0,
+                "mean_weight_a": 0, "mean_weight_b": 0,
+                "avg_categories_a": 0, "avg_categories_b": 0,
+            })
+            continue
+        idx = torch.tensor(dirs)
+        rows.append({
+            "group": name,
+            "count": len(dirs),
+            "mean_weight_a": avg_w_a[idx].mean().item(),
+            "mean_weight_b": avg_w_b[idx].mean().item(),
+            "avg_categories_a": cat_count_a[idx].mean().item(),
+            "avg_categories_b": cat_count_b[idx].mean().item(),
+        })
 
     return pd.DataFrame(rows)
