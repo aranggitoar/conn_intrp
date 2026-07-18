@@ -583,10 +583,11 @@ def run_ablation(
 
             probs_orig = F.softmax(logits_orig, dim=-1)
             log_probs_orig = F.log_softmax(logits_orig, dim=-1)
-            gold_tok = [
-                adapter.processor.tokenizer(targets[0], add_special_tokens=False)["input_ids"][-1]
-                for targets in targets_batch
-            ]
+            pad_id = adapter.processor.tokenizer.pad_token_id or 0
+            gold_tok = []
+            for targets in targets_batch:
+                ids = adapter.processor.tokenizer(targets[0], add_special_tokens=False)["input_ids"]
+                gold_tok.append(ids[-1] if ids else pad_id)
             gold_idx = torch.tensor(gold_tok, device=logits_orig.device)
             lp_orig = log_probs_orig[range(actual), gold_idx]
             stacked_attn = attention_mask.repeat(4, 1)
@@ -959,10 +960,11 @@ def run_joint_ablation(
 
             probs_orig = F.softmax(logits_orig, dim=-1)
             log_probs_orig = F.log_softmax(logits_orig, dim=-1)
-            gold_tok = [
-                adapter.processor.tokenizer(targets[0], add_special_tokens=False)["input_ids"][-1]
-                for targets in targets_batch
-            ]
+            pad_id = adapter.processor.tokenizer.pad_token_id or 0
+            gold_tok = []
+            for targets in targets_batch:
+                ids = adapter.processor.tokenizer(targets[0], add_special_tokens=False)["input_ids"]
+                gold_tok.append(ids[-1] if ids else pad_id)
             gold_idx = torch.tensor(gold_tok, device=logits_orig.device)
             lp_orig = log_probs_orig[range(actual), gold_idx]
             stacked_attn = attention_mask.repeat(4, 1)
@@ -1303,12 +1305,11 @@ def run_total_ablation(
 
             probs_orig = F.softmax(logits_orig, dim=-1)
             log_probs_orig = F.log_softmax(logits_orig, dim=-1)
-            gold_tok = [
-                adapter.processor.tokenizer(targets[0], add_special_tokens=False)[
-                    "input_ids"
-                ][-1]
-                for targets in targets_batch
-            ]
+            pad_id = adapter.processor.tokenizer.pad_token_id or 0
+            gold_tok = []
+            for targets in targets_batch:
+                ids = adapter.processor.tokenizer(targets[0], add_special_tokens=False)["input_ids"]
+                gold_tok.append(ids[-1] if ids else pad_id)
             gold_idx = torch.tensor(gold_tok, device=logits_orig.device)
             lp_orig = log_probs_orig[range(actual), gold_idx]
             stacked_attn = attention_mask.repeat(2, 1)
