@@ -1,0 +1,74 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "conn-intrp"
+version = "0.1.0"
+description = "Mechanistic interpretability of cross-modal connectors in VLMs"
+requires-python = ">=3.12"
+
+dependencies = [
+    "torch>=2.9.0",
+    "torchvision",
+    "transformers>=5.11.0",
+    "tqdm",
+    "numpy",
+    "rapidfuzz",
+    "Pillow",
+    "matplotlib",
+    "pandas",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov",
+    "black>=25.1.0",
+    "ruff>=0.8.0",
+    "isort>=6.0.0",
+    "mypy>=1.5.0",
+]
+
+[tool.black]
+line-length = 100
+target-version = ['py312']
+exclude = '''
+/(
+    \.git
+  | __pycache__
+  | \.pytest_cache
+  | notebooks
+  | outputs
+  | tmp
+)/
+'''
+
+[tool.isort]
+profile = "black"
+line_length = 100
+skip_glob = ["notebooks/*", "outputs/*", "tmp/*"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+ignore_missing_imports = true
+
+exclude = [
+    'notebooks/',
+    'outputs/',
+    'tmp/',
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["conn_intrp"]
