@@ -660,7 +660,7 @@ def topk_botk_summary(
         top_parts = []
         bot_parts = []
         for layer in layers:
-            layer_dl = dl if layer == "proj" else dl.get(layer, {})
+            layer_dl = _get_layer_dl(dl, layer)
             for d_idx in dir_list[layer]:
                 d_data = layer_dl.get(d_idx, {})
                 prefix = {"layer": layer, "direction": d_idx}
@@ -677,7 +677,7 @@ def topk_botk_summary(
         all_top = []
         all_bot = []
         for layer in layers:
-            layer_dl = dl if layer == "proj" else dl.get(layer, {})
+            layer_dl = _get_layer_dl(dl, layer)
             for d_idx in dir_list[layer]:
                 d_data = layer_dl.get(d_idx, {})
                 if topk_key in d_data:
@@ -760,7 +760,7 @@ def super_additivity(
             matched = joint_dirs & indiv_dirs
 
             sum_kl = 0.0
-            layer_dl = dl if layer == "proj" else dl.get(layer, {})
+            layer_dl = _get_layer_dl(dl, layer)
             for d_idx in matched:
                 d_data = layer_dl.get(d_idx, {})
                 vals = d_data.get(kl_div_key)
@@ -812,7 +812,7 @@ def most_changed_directions(
         layers = _layer_names(abl)
 
         for layer in layers:
-            layer_dl = dl if layer == "proj" else dl.get(layer, {})
+            layer_dl = _get_layer_dl(dl, layer)
             dir_kls = []
             for d_idx in dir_list[layer]:
                 d_data = layer_dl.get(d_idx, {})
