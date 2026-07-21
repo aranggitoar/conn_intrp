@@ -286,7 +286,7 @@ def compute_category_means(
 
                 missing_svd = [l for l in layers if l.name in missing]
                 cat_coeff_new = {
-                    l.name: torch.empty(len(data), adapter.n_patches, l.n_dirs, dtype=torch.float16)
+                    l.name: torch.empty(len(data), adapter.n_patches, l.n_dirs, dtype=torch.float32)
                     for l in missing_svd
                 }
                 cat_contrib_new = {
@@ -341,7 +341,7 @@ def compute_category_means(
 
         length = len(data)
         cat_coefficients = {
-            l.name: torch.empty(length, adapter.n_patches, l.n_dirs, dtype=torch.float16)
+            l.name: torch.empty(length, adapter.n_patches, l.n_dirs, dtype=torch.float32)
             for l in layers
         }
         cat_global_contrib = {l.name: torch.zeros(l.n_dirs, dtype=torch.float32) for l in layers}
@@ -561,7 +561,7 @@ def run_ablation(
                 if layer.name not in directions_to_ablate:
                     continue
                 coeff = cat_coefficients[layer.name][i : i + actual].to(
-                    dtype=adapter.compute_dtype, device="cuda"
+                    dtype=torch.float32, device="cuda"
                 )
                 batch_coeffs[layer.name] = coeff
                 out = coeff @ layer.U.T.to(coeff.dtype)
@@ -575,7 +575,7 @@ def run_ablation(
                     conn_out_orig = layer_outputs[last_layer.name]
                 else:
                     last_coeff = cat_coefficients[last_layer.name][i : i + actual].to(
-                        dtype=adapter.compute_dtype, device="cuda"
+                        dtype=torch.float32, device="cuda"
                     )
                     conn_out_orig = adapter.reconstruct(last_coeff)
                 embeds_orig = adapter.merge_embeds(inputs, text_embeds, conn_out_orig)
@@ -950,7 +950,7 @@ def run_joint_ablation(
             layer_outputs = {}
             for layer in adapter.svd_layers:
                 coeff = cat_coefficients[layer.name][i : i + actual].to(
-                    dtype=adapter.compute_dtype, device="cuda"
+                    dtype=torch.float32, device="cuda"
                 )
                 batch_coeffs[layer.name] = coeff
                 out = coeff @ layer.U.T.to(coeff.dtype)
@@ -1296,7 +1296,7 @@ def run_total_ablation(
             layer_outputs = {}
             for layer in adapter.svd_layers:
                 coeff = cat_coefficients[layer.name][i : i + actual].to(
-                    dtype=adapter.compute_dtype, device="cuda"
+                    dtype=torch.float32, device="cuda"
                 )
                 batch_coeffs[layer.name] = coeff
                 out = coeff @ layer.U.T.to(coeff.dtype)

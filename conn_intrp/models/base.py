@@ -346,8 +346,8 @@ class ModelAdapter:
         :rtype: torch.Tensor
         """
         vision_out = self.extract_vision(inputs)
-        hidden = self.pre_svd_forward(vision_out)
-        return self.S.to(hidden.dtype) * (hidden @ self.Vt.T.to(hidden.dtype))
+        hidden = self.pre_svd_forward(vision_out).float()
+        return self.S.float() * (hidden @ self.Vt.T.float())
 
     def reconstruct(self, coefficients: torch.Tensor) -> torch.Tensor:
         """
