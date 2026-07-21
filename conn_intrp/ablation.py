@@ -206,6 +206,7 @@ def compute_category_means(
     image_base_path: Path,
     run_dir: Path,
     save_coefficients: bool = True,
+    rerun: bool = False,
 ) -> tuple[
     dict[str, dict[str, torch.Tensor]],
     dict[str, torch.Tensor],
@@ -236,6 +237,8 @@ def compute_category_means(
     :param save_coefficients: Whether to include raw coefficient tensors
         in checkpoints. Default True
     :type save_coefficients: bool
+    :param rerun: Ignore existing checkpoints and recompute everything
+    :type rerun: bool
     :returns: ``(per_category_a_star, global_a_star)`` where means are
         ``{cat: {layer: Tensor}}`` / ``{layer: Tensor}`` on CUDA
     :rtype: tuple[dict[str, dict[str, torch.Tensor]],
@@ -243,7 +246,7 @@ def compute_category_means(
     """
     layers = adapter.svd_layers
     layer_names = [l.name for l in layers]
-    completed = get_completed_categories(run_dir)
+    completed = set() if rerun else get_completed_categories(run_dir)
 
     per_category_a_star: dict[str, dict[str, torch.Tensor]] = {}
 
@@ -259,7 +262,7 @@ def compute_category_means(
                 missing = set(layer_names) - set(raw_astar.keys())
                 if not missing:
                     per_category_a_star[name] = {
-                        ln: raw_astar[ln].to(dtype=adapter.compute_dtype, device="cuda")
+                        ln: raw_astar[ln].to(dtype=torch.float32, device="cuda")
                         for ln in raw_astar
                     }
                     for img_id in ckpt.get("new_image_ids", []):
@@ -320,7 +323,7 @@ def compute_category_means(
                     global_mean_sum[ln] += cat_contrib_new[ln]
 
                 per_category_a_star[name] = {
-                    ln: merged_astar[ln].to(dtype=adapter.compute_dtype, device="cuda")
+                    ln: merged_astar[ln].to(dtype=torch.float32, device="cuda")
                     for ln in layer_names
                 }
                 ckpt_data = {
@@ -371,7 +374,7 @@ def compute_category_means(
                         cat_global_contrib[ln] += coefficients[ln][j].mean(dim=0).cpu().float()
 
         cat_a_star = {
-            ln: (cat_mean_sum[ln] / n_patches_seen).to(dtype=adapter.compute_dtype, device="cuda")
+            ln: (cat_mean_sum[ln] / n_patches_seen).to(device="cuda")
             for ln in layer_names
         }
         per_category_a_star[name] = cat_a_star
@@ -390,7 +393,7 @@ def compute_category_means(
         save_checkpoint(run_dir, name, ckpt_data)
 
     global_a_star = {
-        ln: (global_mean_sum[ln] / n_unique_images).to(dtype=adapter.compute_dtype, device="cuda")
+        ln: (global_mean_sum[ln] / n_unique_images).to(device="cuda")
         for ln in layer_names
     }
 
@@ -418,6 +421,7 @@ def run_ablation(
     run_dir: Path,
     coefficients_dir: Path,
     rand_seed: int = 42,
+    rerun: bool = False,
 ) -> None:
     """
     Per-direction, per-layer ablation with ANLS scoring and Δlogit extraction.
@@ -502,12 +506,11 @@ def run_ablation(
         cat_dir = run_dir / fs_safe(name)
         cat_dir.mkdir(parents=True, exist_ok=True)
 
-        # Per-direction resume: load existing results and skip done directions
         existing_dirs_set = set()
         old_delta = None
         old_summary = None
         summary_path = cat_dir / "anls_summary.json"
-        if summary_path.exists():
+        if not rerun and summary_path.exists():
             with open(summary_path) as f:
                 old_summary = json.load(f)
             for ln, dirs in old_summary.get("directions", {}).items():
@@ -798,6 +801,7 @@ def run_joint_ablation(
     run_dir: Path,
     coefficients_dir: Path,
     rand_seed: int = 42,
+    rerun: bool = False,
 ) -> None:
     """
     Joint ablation of entire direction sets with ANLS scoring and Δlogit
@@ -865,11 +869,13 @@ def run_joint_ablation(
         ),
     )
 
-    completed = {
-        name
-        for name in data_categorized
-        if (run_dir / fs_safe(name) / "joint_anls_summary.json").exists()
-    }
+    completed = set()
+    if not rerun:
+        completed = {
+            name
+            for name in data_categorized
+            if (run_dir / fs_safe(name) / "joint_anls_summary.json").exists()
+        }
     if completed:
         print(f"Resuming joint ablation: skipping {len(completed)} completed categories")
 
@@ -1194,6 +1200,7 @@ def run_total_ablation(
     image_base_path: Path,
     run_dir: Path,
     coefficients_dir: Path,
+    rerun: bool = False,
 ) -> None:
     """
     Zero and global-mean ablation of all directions to measure total KL budget.
@@ -1237,11 +1244,13 @@ def run_total_ablation(
         ),
     )
 
-    completed = {
-        name
-        for name in data_categorized
-        if (run_dir / fs_safe(name) / "total_ablation.json").exists()
-    }
+    completed = set()
+    if not rerun:
+        completed = {
+            name
+            for name in data_categorized
+            if (run_dir / fs_safe(name) / "total_ablation.json").exists()
+        }
     if completed:
         print(f"Resuming total ablation: skipping {len(completed)} completed categories")
 
