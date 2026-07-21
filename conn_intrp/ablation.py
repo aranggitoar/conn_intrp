@@ -603,27 +603,30 @@ def run_ablation(
                 orig_d = batch_coeffs[layer_name][..., dir_idx]
                 l_out = layer_outputs[layer_name]
 
-                rand_vals = cat_a_star[layer_name][dir_idx] + torch.randn(
+                cd = batch_coeffs[layer_name].dtype
+                cat_d = cat_a_star[layer_name][dir_idx].to(cd)
+                global_d = global_a_star[layer_name][dir_idx].to(cd)
+                rand_vals = cat_d + torch.randn(
                     *batch_coeffs[layer_name].shape[:-1],
                     generator=rand_gen,
                 ).to(
                     device=batch_coeffs[layer_name].device,
-                    dtype=batch_coeffs[layer_name].dtype,
+                    dtype=cd,
                 ) * cat_std[
                     layer_name
                 ][
                     dir_idx
                 ].to(
                     batch_coeffs[layer_name].device,
-                    batch_coeffs[layer_name].dtype,
+                    cd,
                 )
 
                 with torch.no_grad():
                     stacked_l = torch.cat(
                         [
-                            l_out + (cat_a_star[layer_name][dir_idx] - orig_d).unsqueeze(-1) * u_d,
+                            l_out + (cat_d - orig_d).unsqueeze(-1) * u_d,
                             l_out
-                            + (global_a_star[layer_name][dir_idx] - orig_d).unsqueeze(-1) * u_d,
+                            + (global_d - orig_d).unsqueeze(-1) * u_d,
                             l_out + (-orig_d).unsqueeze(-1) * u_d,
                             l_out + (rand_vals - orig_d).unsqueeze(-1) * u_d,
                         ],
@@ -987,8 +990,8 @@ def run_joint_ablation(
 
                     U_sub = layer.U[:, dir_list].to(coeff.dtype)
                     orig_sub = coeff[..., dir_list]
-                    cat_sub = cat_a_star[layer_name][dir_list]
-                    global_sub = global_a_star[layer_name][dir_list]
+                    cat_sub = cat_a_star[layer_name][dir_list].to(coeff.dtype)
+                    global_sub = global_a_star[layer_name][dir_list].to(coeff.dtype)
 
                     std_sub = cat_std[layer_name][dir_list].to(coeff.device, coeff.dtype)
                     rand_sub = (
@@ -1328,7 +1331,7 @@ def run_total_ablation(
                 l_out = layer_outputs[ln]
                 coeff = batch_coeffs[ln]
 
-                global_coeff = global_a_star[ln].expand_as(coeff)
+                global_coeff = global_a_star[ln].to(coeff.dtype).expand_as(coeff)
                 conn_delta_zero = (-coeff) @ layer.U.T.to(coeff.dtype)
                 conn_delta_global = (global_coeff - coeff) @ layer.U.T.to(coeff.dtype)
 
