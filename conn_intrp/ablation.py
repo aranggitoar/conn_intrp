@@ -873,12 +873,19 @@ def run_joint_ablation(
     )
 
     completed = set()
+    missing_labels: dict[str, list[str]] = {}
     if not rerun:
-        completed = {
-            name
-            for name in data_categorized
-            if (run_dir / fs_safe(name) / "joint_anls_summary.json").exists()
-        }
+        for name in data_categorized:
+            summary_path = run_dir / fs_safe(name) / "joint_anls_summary.json"
+            if summary_path.exists():
+                with open(summary_path) as f:
+                    existing = json.load(f)
+                existing_sets = set(existing.get("sets", {}).keys())
+                missing = [sl for sl in set_labels if sl not in existing_sets]
+                if not missing:
+                    completed.add(name)
+                else:
+                    missing_labels[name] = missing
     if completed:
         print(f"Resuming joint ablation: skipping {len(completed)} completed categories")
 
@@ -886,6 +893,8 @@ def run_joint_ablation(
         if name in completed:
             print(f'  Skipping "{name}" (results exist)')
             continue
+
+        cat_set_labels = missing_labels.get(name, set_labels)
 
         length = len(data)
         cat_a_star = per_category_a_star[name]
@@ -896,7 +905,7 @@ def run_joint_ablation(
 
         nls_original = []
         set_results: dict[str, dict[str, dict]] = {}
-        for sl in set_labels:
+        for sl in cat_set_labels:
             set_results[sl] = {}
             cat_layers = direction_sets[sl].get(name, {})
             for ln in cat_layers:
@@ -978,7 +987,7 @@ def run_joint_ablation(
             lp_orig = log_probs_orig[range(actual), gold_idx]
             stacked_attn = attention_mask.repeat(4, 1)
 
-            for sl in set_labels:
+            for sl in cat_set_labels:
                 cat_layers = direction_sets[sl].get(name, {})
 
                 for layer_name, dir_list in cat_layers.items():
@@ -1115,7 +1124,7 @@ def run_joint_ablation(
             "anls_original": anls_orig,
             "sets": {},
         }
-        for sl in set_labels:
+        for sl in cat_set_labels:
             summary["sets"][sl] = {}
             for ln, res in set_results[sl].items():
                 dirs = direction_sets[sl].get(name, {}).get(ln, [])
@@ -1136,10 +1145,16 @@ def run_joint_ablation(
                     "delta_gold_prob_rand": res["dgp_rand"],
                 }
 
-        save_json(cat_dir / "joint_anls_summary.json", summary)
+        summary_path = cat_dir / "joint_anls_summary.json"
+        if summary_path.exists():
+            with open(summary_path) as f:
+                existing_summary = json.load(f)
+            existing_summary["sets"].update(summary["sets"])
+            summary = existing_summary
+        save_json(summary_path, summary)
 
         delta_logits = {}
-        for sl in set_labels:
+        for sl in cat_set_labels:
             delta_logits[sl] = {}
             for ln, res in set_results[sl].items():
                 delta_logits[sl][ln] = {
@@ -1180,10 +1195,17 @@ def run_joint_ablation(
                         torch.cat(res["botk_rand"], dim=0) if res["botk_rand"] else torch.empty(0)
                     ),
                 }
-        torch.save({"_schema": _JOINT_DELTA_SCHEMA, **delta_logits}, cat_dir / "joint_delta_logits.pt")
+        delta_path = cat_dir / "joint_delta_logits.pt"
+        if delta_path.exists():
+            existing_delta = torch.load(delta_path, weights_only=False)
+            existing_delta.update(delta_logits)
+            delta_logits = existing_delta
+        else:
+            delta_logits["_schema"] = _JOINT_DELTA_SCHEMA
+        torch.save(delta_logits, delta_path)
 
         print(f"\n{name}: orig={anls_orig:.4f}")
-        for sl in set_labels:
+        for sl in cat_set_labels:
             for ln, res in set_results[sl].items():
                 n_dirs = len(direction_sets[sl].get(name, {}).get(ln, []))
                 anls_z = sum(res["nls_zero"]) / length if res["nls_zero"] else 0
