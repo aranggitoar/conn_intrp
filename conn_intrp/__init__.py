@@ -102,6 +102,7 @@ from .output import (
     save_json,
     update_metadata,
 )
+from .semantic_control import compute_reference_norms, run_semantic_control
 from .spatial_probe import run_spatial_probe
 
 __all__ = [
@@ -176,6 +177,9 @@ __all__ = [
     "probe_selectivity_table",
     "probe_ablation_cross",
     "probe_direction_clusters",
+    # semantic control
+    "compute_reference_norms",
+    "run_semantic_control",
     # cka
     "linear_cka",
 ]
