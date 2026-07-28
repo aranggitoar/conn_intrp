@@ -145,65 +145,227 @@ def load_image_pairs(
 
 
 def prepare_interchange_items(
-    downloaded_pairs: list[dict],
+    csv_path: str | Path,
+    image_dir: str | Path,
     swap_type: str,
+    pairs: list[tuple[str, str]],
 ) -> list[dict]:
-    """Convert downloaded pair data into interchange items.
+    """Build interchange items from the SVO probes CSV and downloaded
+    images.
 
-    Each downloaded pair produces two items — forward (pos base, neg
-    swap) and reverse (neg base, pos swap) — so both directions are
-    tested.
+    Reads triplet metadata from the CSV, filters for the given swap
+    type and attribute pairs, and matches against images on disk.
+    Each matched pair produces two items (forward and reverse swap).
 
-    :param downloaded_pairs: List of dicts from
-        ``check_download.download_pairs``, each with keys ``pair``,
-        ``pair_id``, ``pos_path``, ``neg_path``, ``pos_triplet``,
-        ``neg_triplet``.
+    Image directory structure expected::
+
+        image_dir/<swap_type>/<a>_vs_<b>/<pos_image_id>_pos.jpg
+        image_dir/<swap_type>/<a>_vs_<b>/<pos_image_id>_neg.jpg
+
+    :param csv_path: Path to ``svo_probes.csv``.
+    :param image_dir: Root of the downloaded images.
     :param swap_type: One of ``"subject"``, ``"verb"``, ``"object"``.
+    :param pairs: Attribute pairs to include, e.g.
+        ``[("sit", "stand"), ("run", "walk")]``.
     :returns: List of interchange item dicts ready for
         :func:`run_interchange`.
     """
+    import csv
+
+    col = {"subject": "subj_neg", "verb": "verb_neg", "object": "obj_neg"}[
+        swap_type
+    ]
+    idx = {"subject": 0, "verb": 1, "object": 2}[swap_type]
+    pair_set = {tuple(sorted(p)) for p in pairs}
+    image_dir = Path(image_dir).resolve()
+
     items: list[dict] = []
-    for p in downloaded_pairs:
-        pos_trip = [x.strip() for x in p["pos_triplet"].split(",")]
-        neg_trip_raw = p["neg_triplet"].strip("[] '\"")
-        neg_trip = [x.strip() for x in neg_trip_raw.split(",")]
+    with open(csv_path) as f:
+        for row in csv.DictReader(f):
+            if row[col] != "True":
+                continue
 
-        if len(pos_trip) != 3 or len(neg_trip) != 3:
-            continue
+            pos_trip = [x.strip() for x in row["pos_triplet"].split(",")]
+            neg_raw = row["neg_triplet"].strip("[] '\"")
+            neg_trip = [x.strip() for x in neg_raw.split(",")]
+            if len(pos_trip) != 3 or len(neg_trip) != 3:
+                continue
 
-        question, pos_answer, neg_answer = _make_prompt(
-            pos_trip, neg_trip, swap_type
-        )
-        a, b = p["pair"]
-        label = f"{swap_type}:{a}_vs_{b}"
+            pair = tuple(sorted([pos_trip[idx], neg_trip[idx]]))
+            if pair not in pair_set:
+                continue
 
-        items.append(
-            {
-                "base_image": p["pos_path"],
-                "swap_image": p["neg_path"],
-                "question": question,
-                "base_answer": pos_answer,
-                "swap_answer": neg_answer,
-                "direction": "pos_to_neg",
-                "label": label,
-                "pair_id": p["pair_id"],
-            }
-        )
+            a, b = pair
+            pair_id = row["pos_image_id"]
+            pair_dir = image_dir / swap_type / f"{a}_vs_{b}"
+            pos_path = pair_dir / f"{pair_id}_pos.jpg"
+            neg_path = pair_dir / f"{pair_id}_neg.jpg"
 
-        items.append(
-            {
-                "base_image": p["neg_path"],
-                "swap_image": p["pos_path"],
-                "question": question,
-                "base_answer": neg_answer,
-                "swap_answer": pos_answer,
-                "direction": "neg_to_pos",
-                "label": label,
-                "pair_id": p["pair_id"],
-            }
-        )
+            if not pos_path.exists() or not neg_path.exists():
+                continue
+
+            prompt, pos_answer, neg_answer = _make_prompt(
+                pos_trip, neg_trip, swap_type
+            )
+            label = f"{swap_type}:{a}_vs_{b}"
+
+            items.append(
+                {
+                    "base_image": str(pos_path),
+                    "swap_image": str(neg_path),
+                    "question": prompt,
+                    "base_answer": pos_answer,
+                    "swap_answer": neg_answer,
+                    "direction": "pos_to_neg",
+                    "label": label,
+                    "pair_id": pair_id,
+                }
+            )
+
+            items.append(
+                {
+                    "base_image": str(neg_path),
+                    "swap_image": str(pos_path),
+                    "question": prompt,
+                    "base_answer": neg_answer,
+                    "swap_answer": pos_answer,
+                    "direction": "neg_to_pos",
+                    "label": label,
+                    "pair_id": pair_id,
+                }
+            )
+
+    print(f"Loaded {len(items)} interchange items ({len(items)//2} pairs)")
+    by_label = defaultdict(int)
+    for item in items:
+        by_label[item["label"]] += 1
+    for label, count in sorted(by_label.items()):
+        print(f"  {label}: {count} items ({count//2} pairs)")
 
     return items
+
+
+def _process_batch(adapter, batch, tokenizer, image_base_path):
+    """Run interchange on a single batch, return list of result dicts."""
+    actual = len(batch)
+
+    base_data = [
+        {
+            "image": item["base_image"],
+            "question": item["question"],
+            "answers": [item["base_answer"]],
+        }
+        for item in batch
+    ]
+    swap_data = [
+        {
+            "image": item["swap_image"],
+            "question": item["question"],
+            "answers": [item["swap_answer"]],
+        }
+        for item in batch
+    ]
+
+    inputs_base = adapter.preprocess(base_data, image_base_path)
+    inputs_swap = adapter.preprocess(swap_data, image_base_path)
+
+    with torch.no_grad():
+        vision_base = adapter.extract_vision(inputs_base)
+        conn_out_base = adapter.run_connector(vision_base)
+
+        vision_swap = adapter.extract_vision(inputs_swap)
+        conn_out_swap = adapter.run_connector(vision_swap)
+
+        text_embeds = adapter.get_text_embeds(inputs_base)
+        attention_mask = inputs_base["attention_mask"]
+
+        embeds_orig = adapter.merge_embeds(
+            inputs_base, text_embeds, conn_out_base
+        )
+        preds_orig, logits_orig = adapter.generate_with_logits(
+            embeds_orig, attention_mask
+        )
+
+        embeds_swapped = adapter.merge_embeds(
+            inputs_base, text_embeds, conn_out_swap
+        )
+        preds_swap, logits_swap = adapter.generate_with_logits(
+            embeds_swapped, attention_mask
+        )
+
+    log_probs_orig = F.log_softmax(logits_orig, dim=-1)
+    log_probs_swap = F.log_softmax(logits_swap, dim=-1)
+    probs_orig = F.softmax(logits_orig, dim=-1)
+
+    kl = F.kl_div(
+        log_probs_swap, probs_orig, reduction="none"
+    ).sum(-1)
+
+    results = []
+    for j in range(actual):
+        item = batch[j]
+
+        ids_base_ans = tokenizer(
+            item["base_answer"], add_special_tokens=False
+        )["input_ids"]
+        ids_swap_ans = tokenizer(
+            item["swap_answer"], add_special_tokens=False
+        )["input_ids"]
+
+        lp = {}
+        if ids_base_ans and ids_swap_ans:
+            ba, sa = ids_base_ans[0], ids_swap_ans[0]
+            lp["base_under_orig"] = log_probs_orig[j, ba].item()
+            lp["swap_under_orig"] = log_probs_orig[j, sa].item()
+            lp["base_under_swap"] = log_probs_swap[j, ba].item()
+            lp["swap_under_swap"] = log_probs_swap[j, sa].item()
+
+        orig_prefers_base = (
+            lp.get("base_under_orig", 0)
+            > lp.get("swap_under_orig", 0)
+        )
+        swap_prefers_swap = (
+            lp.get("swap_under_swap", 0)
+            > lp.get("base_under_swap", 0)
+        )
+
+        pred_o = preds_orig[j].lower()
+        pred_s = preds_swap[j].lower()
+        ba_re = re.compile(
+            r"\b" + re.escape(item["base_answer"].lower()) + r"\b"
+        )
+        sa_re = re.compile(
+            r"\b" + re.escape(item["swap_answer"].lower()) + r"\b"
+        )
+        orig_has_base = bool(ba_re.search(pred_o))
+        swap_has_swap = bool(sa_re.search(pred_s))
+
+        results.append(
+            {
+                "label": item["label"],
+                "pair_id": item["pair_id"],
+                "direction": item["direction"],
+                "question": item["question"],
+                "base_answer": item["base_answer"],
+                "swap_answer": item["swap_answer"],
+                "pred_orig": preds_orig[j],
+                "pred_swap": preds_swap[j],
+                "kl": kl[j].item(),
+                "logprobs": lp,
+                "orig_prefers_base": orig_prefers_base,
+                "swap_prefers_swap": swap_prefers_swap,
+                "interchange_success_logprob": (
+                    orig_prefers_base and swap_prefers_swap
+                ),
+                "orig_text_has_base": orig_has_base,
+                "swap_text_has_swap": swap_has_swap,
+                "interchange_success_text": (
+                    orig_has_base and swap_has_swap
+                ),
+            }
+        )
+
+    return results
 
 
 def run_interchange(
@@ -253,6 +415,7 @@ def run_interchange(
     )
 
     results: list[dict] = []
+    skipped: list[str] = []
 
     for i in tqdm(
         range(0, len(items), batch_size),
@@ -260,118 +423,31 @@ def run_interchange(
         desc="Interchange",
     ):
         batch = items[i : i + batch_size]
-        actual = len(batch)
 
-        base_data = [
-            {
-                "image": item["base_image"],
-                "question": item["question"],
-                "answers": [item["base_answer"]],
-            }
-            for item in batch
-        ]
-        swap_data = [
-            {
-                "image": item["swap_image"],
-                "question": item["question"],
-                "answers": [item["swap_answer"]],
-            }
-            for item in batch
-        ]
-
-        inputs_base = adapter.preprocess(base_data, image_base_path)
-        inputs_swap = adapter.preprocess(swap_data, image_base_path)
-
-        with torch.no_grad():
-            vision_base = adapter.extract_vision(inputs_base)
-            conn_out_base = adapter.run_connector(vision_base)
-
-            vision_swap = adapter.extract_vision(inputs_swap)
-            conn_out_swap = adapter.run_connector(vision_swap)
-
-            text_embeds = adapter.get_text_embeds(inputs_base)
-            attention_mask = inputs_base["attention_mask"]
-
-            embeds_orig = adapter.merge_embeds(
-                inputs_base, text_embeds, conn_out_base
+        try:
+            batch_results = _process_batch(
+                adapter, batch, tokenizer, image_base_path
             )
-            preds_orig, logits_orig = adapter.generate_with_logits(
-                embeds_orig, attention_mask
-            )
+            results.extend(batch_results)
+        except Exception:
+            for item in batch:
+                try:
+                    single = _process_batch(
+                        adapter, [item], tokenizer, image_base_path
+                    )
+                    results.extend(single)
+                except Exception:
+                    skipped.append(
+                        f"{item['label']} pair={item['pair_id']} "
+                        f"dir={item['direction']}"
+                    )
 
-            embeds_swapped = adapter.merge_embeds(
-                inputs_base, text_embeds, conn_out_swap
-            )
-            preds_swap, logits_swap = adapter.generate_with_logits(
-                embeds_swapped, attention_mask
-            )
-
-        log_probs_orig = F.log_softmax(logits_orig, dim=-1)
-        log_probs_swap = F.log_softmax(logits_swap, dim=-1)
-        probs_orig = F.softmax(logits_orig, dim=-1)
-
-        kl = F.kl_div(
-            log_probs_swap, probs_orig, reduction="none"
-        ).sum(-1)
-
-        for j in range(actual):
-            item = batch[j]
-
-            ids_base_ans = tokenizer(
-                item["base_answer"], add_special_tokens=False
-            )["input_ids"]
-            ids_swap_ans = tokenizer(
-                item["swap_answer"], add_special_tokens=False
-            )["input_ids"]
-
-            lp = {}
-            if ids_base_ans and ids_swap_ans:
-                ba, sa = ids_base_ans[0], ids_swap_ans[0]
-                lp["base_under_orig"] = log_probs_orig[j, ba].item()
-                lp["swap_under_orig"] = log_probs_orig[j, sa].item()
-                lp["base_under_swap"] = log_probs_swap[j, ba].item()
-                lp["swap_under_swap"] = log_probs_swap[j, sa].item()
-
-            orig_prefers_base = (
-                lp.get("base_under_orig", 0)
-                > lp.get("swap_under_orig", 0)
-            )
-            swap_prefers_swap = (
-                lp.get("swap_under_swap", 0)
-                > lp.get("base_under_swap", 0)
-            )
-
-            pred_o = preds_orig[j].lower()
-            pred_s = preds_swap[j].lower()
-            ba_re = re.compile(r"\b" + re.escape(item["base_answer"].lower()) + r"\b")
-            sa_re = re.compile(r"\b" + re.escape(item["swap_answer"].lower()) + r"\b")
-            orig_has_base = bool(ba_re.search(pred_o))
-            swap_has_swap = bool(sa_re.search(pred_s))
-
-            results.append(
-                {
-                    "label": item["label"],
-                    "pair_id": item["pair_id"],
-                    "direction": item["direction"],
-                    "question": item["question"],
-                    "base_answer": item["base_answer"],
-                    "swap_answer": item["swap_answer"],
-                    "pred_orig": preds_orig[j],
-                    "pred_swap": preds_swap[j],
-                    "kl": kl[j].item(),
-                    "logprobs": lp,
-                    "orig_prefers_base": orig_prefers_base,
-                    "swap_prefers_swap": swap_prefers_swap,
-                    "interchange_success_logprob": (
-                        orig_prefers_base and swap_prefers_swap
-                    ),
-                    "orig_text_has_base": orig_has_base,
-                    "swap_text_has_swap": swap_has_swap,
-                    "interchange_success_text": (
-                        orig_has_base and swap_has_swap
-                    ),
-                }
-            )
+    if skipped:
+        print(f"\nSkipped {len(skipped)} items (corrupt/unreadable images):")
+        for s in skipped[:20]:
+            print(f"  {s}")
+        if len(skipped) > 20:
+            print(f"  ... and {len(skipped) - 20} more")
 
     by_label: dict[str, list[dict]] = defaultdict(list)
     for r in results:
