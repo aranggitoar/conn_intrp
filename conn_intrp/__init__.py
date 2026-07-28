@@ -103,6 +103,12 @@ from .output import (
     update_metadata,
 )
 from .semantic_control import compute_reference_norms, run_semantic_control
+from .semantic_control_analysis import (
+    all_topk_botk,
+    comparison_table,
+    load_semantic_control,
+    topk_botk_summary as sc_topk_botk_summary,
+)
 from .spatial_probe import run_spatial_probe
 
 __all__ = [
@@ -180,6 +186,10 @@ __all__ = [
     # semantic control
     "compute_reference_norms",
     "run_semantic_control",
+    "load_semantic_control",
+    "sc_topk_botk_summary",
+    "comparison_table",
+    "all_topk_botk",
     # cka
     "linear_cka",
 ]
