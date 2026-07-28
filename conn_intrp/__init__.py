@@ -102,6 +102,11 @@ from .output import (
     save_json,
     update_metadata,
 )
+from .interchange import (
+    load_image_pairs,
+    prepare_interchange_items,
+    run_interchange,
+)
 from .semantic_control import compute_reference_norms, run_semantic_control
 from .semantic_control_analysis import (
     all_topk_botk,
@@ -190,6 +195,10 @@ __all__ = [
     "sc_topk_botk_summary",
     "comparison_table",
     "all_topk_botk",
+    # interchange
+    "load_image_pairs",
+    "prepare_interchange_items",
+    "run_interchange",
     # cka
     "linear_cka",
 ]
