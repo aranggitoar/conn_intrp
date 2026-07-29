@@ -245,8 +245,83 @@ def prepare_interchange_items(
     return items
 
 
-def _process_batch(adapter, batch, tokenizer, image_base_path):
-    """Run interchange on a single batch, return list of result dicts."""
+def _score_condition(
+    batch, tokenizer, preds, log_probs, probs_orig, arm,
+):
+    """Score one generation condition, return list of result dicts."""
+    results = []
+    kl = F.kl_div(
+        log_probs, probs_orig, reduction="none"
+    ).sum(-1)
+
+    for j in range(len(batch)):
+        item = batch[j]
+        ids_base_ans = tokenizer(
+            item["base_answer"], add_special_tokens=False
+        )["input_ids"]
+        ids_swap_ans = tokenizer(
+            item["swap_answer"], add_special_tokens=False
+        )["input_ids"]
+
+        lp = {}
+        if ids_base_ans and ids_swap_ans:
+            ba, sa = ids_base_ans[0], ids_swap_ans[0]
+            lp["base_under_swap"] = log_probs[j, ba].item()
+            lp["swap_under_swap"] = log_probs[j, sa].item()
+
+        swap_prefers_swap = (
+            lp.get("swap_under_swap", 0)
+            > lp.get("base_under_swap", 0)
+        )
+
+        pred_s = preds[j].lower()
+        sa_re = re.compile(
+            r"\b" + re.escape(item["swap_answer"].lower()) + r"\b"
+        )
+        swap_has_swap = bool(sa_re.search(pred_s))
+
+        results.append({
+            "arm": arm,
+            "kl": kl[j].item(),
+            "logprobs_swap": lp,
+            "swap_prefers_swap": swap_prefers_swap,
+            "pred_swap": preds[j],
+            "swap_text_has_swap": swap_has_swap,
+        })
+    return results
+
+
+def _partial_swap(conn_out_base, conn_out_swap, directions, svd_layer):
+    """Swap specific SVD direction coefficients between two connector outputs."""
+    U = svd_layer.U.float()
+    bias = svd_layer.bias
+    base_f = conn_out_base.float()
+    swap_f = conn_out_swap.float()
+    if bias is not None:
+        base_f = base_f - bias.float()
+        swap_f = swap_f - bias.float()
+    coeff_base = base_f @ U
+    coeff_swap = swap_f @ U
+
+    coeff_mixed = coeff_base.clone()
+    dirs = list(directions)
+    coeff_mixed[..., dirs] = coeff_swap[..., dirs]
+
+    out = coeff_mixed @ U.T
+    if bias is not None:
+        out = out + bias.float()
+    return out.to(conn_out_base.dtype)
+
+
+def _process_batch(adapter, batch, tokenizer, image_base_path,
+                   directions=None, rand_gen=None):
+    """Run interchange on a single batch, return list of result dicts.
+
+    When *directions* is None, performs a full connector output swap.
+    When *directions* is a list of direction indices, swaps only those
+    directions (partial arm) and also swaps a random set of the same
+    size (random arm).
+    """
     actual = len(batch)
 
     base_data = [
@@ -286,86 +361,152 @@ def _process_batch(adapter, batch, tokenizer, image_base_path):
             embeds_orig, attention_mask
         )
 
-        embeds_swapped = adapter.merge_embeds(
-            inputs_base, text_embeds, conn_out_swap
-        )
-        preds_swap, logits_swap = adapter.generate_with_logits(
-            embeds_swapped, attention_mask
-        )
-
     log_probs_orig = F.log_softmax(logits_orig, dim=-1)
-    log_probs_swap = F.log_softmax(logits_swap, dim=-1)
     probs_orig = F.softmax(logits_orig, dim=-1)
 
-    kl = F.kl_div(
-        log_probs_swap, probs_orig, reduction="none"
-    ).sum(-1)
-
-    results = []
+    # Score the original (baseline) condition
+    orig_scores = []
     for j in range(actual):
         item = batch[j]
-
         ids_base_ans = tokenizer(
             item["base_answer"], add_special_tokens=False
         )["input_ids"]
         ids_swap_ans = tokenizer(
             item["swap_answer"], add_special_tokens=False
         )["input_ids"]
-
         lp = {}
         if ids_base_ans and ids_swap_ans:
             ba, sa = ids_base_ans[0], ids_swap_ans[0]
             lp["base_under_orig"] = log_probs_orig[j, ba].item()
             lp["swap_under_orig"] = log_probs_orig[j, sa].item()
-            lp["base_under_swap"] = log_probs_swap[j, ba].item()
-            lp["swap_under_swap"] = log_probs_swap[j, sa].item()
-
         orig_prefers_base = (
-            lp.get("base_under_orig", 0)
-            > lp.get("swap_under_orig", 0)
+            lp.get("base_under_orig", 0) > lp.get("swap_under_orig", 0)
         )
-        swap_prefers_swap = (
-            lp.get("swap_under_swap", 0)
-            > lp.get("base_under_swap", 0)
-        )
-
         pred_o = preds_orig[j].lower()
-        pred_s = preds_swap[j].lower()
         ba_re = re.compile(
             r"\b" + re.escape(item["base_answer"].lower()) + r"\b"
         )
-        sa_re = re.compile(
-            r"\b" + re.escape(item["swap_answer"].lower()) + r"\b"
-        )
         orig_has_base = bool(ba_re.search(pred_o))
-        swap_has_swap = bool(sa_re.search(pred_s))
+        orig_scores.append({
+            "logprobs_orig": lp,
+            "orig_prefers_base": orig_prefers_base,
+            "pred_orig": preds_orig[j],
+            "orig_text_has_base": orig_has_base,
+        })
 
-        results.append(
-            {
+    if directions is None:
+        # Full swap
+        with torch.no_grad():
+            embeds_swapped = adapter.merge_embeds(
+                inputs_base, text_embeds, conn_out_swap
+            )
+            preds_swap, logits_swap = adapter.generate_with_logits(
+                embeds_swapped, attention_mask
+            )
+
+        log_probs_swap = F.log_softmax(logits_swap, dim=-1)
+        swap_scores = _score_condition(
+            batch, tokenizer, preds_swap, log_probs_swap, probs_orig, "full"
+        )
+
+        results = []
+        for j in range(actual):
+            item = batch[j]
+            o = orig_scores[j]
+            s = swap_scores[j]
+            lp = {**o["logprobs_orig"], **s["logprobs_swap"]}
+            results.append({
                 "label": item["label"],
                 "pair_id": item["pair_id"],
                 "direction": item["direction"],
                 "question": item["question"],
                 "base_answer": item["base_answer"],
                 "swap_answer": item["swap_answer"],
-                "pred_orig": preds_orig[j],
-                "pred_swap": preds_swap[j],
-                "kl": kl[j].item(),
+                "pred_orig": o["pred_orig"],
+                "pred_swap": s["pred_swap"],
+                "kl": s["kl"],
                 "logprobs": lp,
-                "orig_prefers_base": orig_prefers_base,
-                "swap_prefers_swap": swap_prefers_swap,
+                "orig_prefers_base": o["orig_prefers_base"],
+                "swap_prefers_swap": s["swap_prefers_swap"],
                 "interchange_success_logprob": (
-                    orig_prefers_base and swap_prefers_swap
+                    o["orig_prefers_base"] and s["swap_prefers_swap"]
                 ),
-                "orig_text_has_base": orig_has_base,
-                "swap_text_has_swap": swap_has_swap,
+                "orig_text_has_base": o["orig_text_has_base"],
+                "swap_text_has_swap": s["swap_text_has_swap"],
                 "interchange_success_text": (
-                    orig_has_base and swap_has_swap
+                    o["orig_text_has_base"] and s["swap_text_has_swap"]
                 ),
-            }
+            })
+        return results
+
+    # Partial + random arms
+    last_layer = adapter.svd_layers[-1]
+    n_dirs = last_layer.U.shape[1]
+
+    conn_partial = _partial_swap(
+        conn_out_base, conn_out_swap, directions, last_layer
+    )
+
+    rand_dirs = torch.randperm(n_dirs, generator=rand_gen)[
+        : len(directions)
+    ].tolist()
+    conn_random = _partial_swap(
+        conn_out_base, conn_out_swap, rand_dirs, last_layer
+    )
+
+    arms = [
+        ("partial", conn_partial),
+        ("random", conn_random),
+    ]
+
+    all_results = {}
+    for arm_name, conn_swapped in arms:
+        with torch.no_grad():
+            embeds = adapter.merge_embeds(
+                inputs_base, text_embeds, conn_swapped
+            )
+            preds, logits = adapter.generate_with_logits(
+                embeds, attention_mask
+            )
+        log_probs = F.log_softmax(logits, dim=-1)
+        swap_scores = _score_condition(
+            batch, tokenizer, preds, log_probs, probs_orig, arm_name
         )
 
-    return results
+        arm_results = []
+        for j in range(actual):
+            item = batch[j]
+            o = orig_scores[j]
+            s = swap_scores[j]
+            lp = {**o["logprobs_orig"], **s["logprobs_swap"]}
+            arm_results.append({
+                "label": item["label"],
+                "pair_id": item["pair_id"],
+                "direction": item["direction"],
+                "question": item["question"],
+                "base_answer": item["base_answer"],
+                "swap_answer": item["swap_answer"],
+                "arm": arm_name,
+                "pred_orig": o["pred_orig"],
+                "pred_swap": s["pred_swap"],
+                "kl": s["kl"],
+                "logprobs": lp,
+                "orig_prefers_base": o["orig_prefers_base"],
+                "swap_prefers_swap": s["swap_prefers_swap"],
+                "interchange_success_logprob": (
+                    o["orig_prefers_base"] and s["swap_prefers_swap"]
+                ),
+                "orig_text_has_base": o["orig_text_has_base"],
+                "swap_text_has_swap": s["swap_text_has_swap"],
+                "interchange_success_text": (
+                    o["orig_text_has_base"] and s["swap_text_has_swap"]
+                ),
+            })
+            if arm_name == "random":
+                arm_results[-1]["random_directions"] = rand_dirs
+        all_results[arm_name] = arm_results
+
+    return all_results
 
 
 def run_interchange(
@@ -375,67 +516,95 @@ def run_interchange(
     batch_size: int,
     image_base_path: str | Path,
     run_dir: str | Path,
+    directions: list[int] | None = None,
+    seed: int = 42,
 ) -> None:
-    """True interchange intervention: swap connector outputs between
-    paired images and measure the effect on model output.
+    """Interchange intervention on connector outputs.
 
-    For each item, runs the base image through vision encoder +
-    connector to get the baseline, then replaces the connector output
-    with the swap image's and generates again.  Records:
+    When *directions* is ``None`` (default), performs a full connector
+    output swap — the existing full-arm experiment.
 
-    - **Forced-choice log-probs**: probability of each answer option
-      at the first generated token, under both conditions.
-    - **Text match**: whether the generated text contains the expected
-      answer word.
-    - **KL divergence**: between baseline and swapped output
-      distributions.
-    - **Generated text**: full predictions for qualitative inspection.
+    When *directions* is a list of SVD direction indices, performs a
+    **partial-arm** interchange: only the listed directions' coefficients
+    are swapped (decomposed on the last SVD layer), while remaining
+    directions keep the base image's values.  A **random arm** with the
+    same number of randomly chosen directions is always run alongside
+    as a baseline.
+
+    Results are saved as:
+
+    - Full arm: ``interchange_results.json`` / ``interchange_summary.json``
+    - Partial arm: ``partial_interchange_results.json`` / ``partial_interchange_summary.json``
+    - Random arm: ``random_interchange_results.json`` / ``random_interchange_summary.json``
 
     :param adapter: Model adapter instance.
     :param items: Output of :func:`prepare_interchange_items`.
     :param batch_size: Images per forward pass.
     :param image_base_path: Root directory for image files.
     :param run_dir: Output directory.
+    :param directions: SVD direction indices to swap. ``None`` for full swap.
+    :param seed: Random seed for the random arm baseline.
     """
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     image_base_path = Path(image_base_path)
 
     tokenizer = adapter.processor.tokenizer
+    is_partial = directions is not None
 
-    update_metadata(
-        run_dir,
-        dict(
-            model=adapter.model_name,
-            experiment="interchange",
-            n_items=len(items),
-            batch_size=batch_size,
-            labels=sorted(set(item["label"] for item in items)),
-        ),
+    meta = dict(
+        model=adapter.model_name,
+        experiment="interchange",
+        mode="partial" if is_partial else "full",
+        n_items=len(items),
+        batch_size=batch_size,
+        labels=sorted(set(item["label"] for item in items)),
     )
+    if is_partial:
+        meta["n_directions"] = len(directions)
+        meta["n_total_directions"] = adapter.svd_layers[-1].U.shape[1]
+        meta["seed"] = seed
+    update_metadata(run_dir, meta)
 
-    results: list[dict] = []
+    rand_gen = torch.Generator().manual_seed(seed) if is_partial else None
+
+    if is_partial:
+        results_partial: list[dict] = []
+        results_random: list[dict] = []
+    else:
+        results: list[dict] = []
     skipped: list[str] = []
 
+    desc = "Partial interchange" if is_partial else "Interchange"
     for i in tqdm(
         range(0, len(items), batch_size),
         total=math.ceil(len(items) / batch_size),
-        desc="Interchange",
+        desc=desc,
     ):
         batch = items[i : i + batch_size]
 
         try:
-            batch_results = _process_batch(
-                adapter, batch, tokenizer, image_base_path
+            batch_out = _process_batch(
+                adapter, batch, tokenizer, image_base_path,
+                directions=directions, rand_gen=rand_gen,
             )
-            results.extend(batch_results)
+            if is_partial:
+                results_partial.extend(batch_out["partial"])
+                results_random.extend(batch_out["random"])
+            else:
+                results.extend(batch_out)
         except Exception:
             for item in batch:
                 try:
                     single = _process_batch(
-                        adapter, [item], tokenizer, image_base_path
+                        adapter, [item], tokenizer, image_base_path,
+                        directions=directions, rand_gen=rand_gen,
                     )
-                    results.extend(single)
+                    if is_partial:
+                        results_partial.extend(single["partial"])
+                        results_random.extend(single["random"])
+                    else:
+                        results.extend(single)
                 except Exception:
                     skipped.append(
                         f"{item['label']} pair={item['pair_id']} "
@@ -449,6 +618,17 @@ def run_interchange(
         if len(skipped) > 20:
             print(f"  ... and {len(skipped) - 20} more")
 
+    if is_partial:
+        for arm_name, arm_results in [
+            ("partial", results_partial),
+            ("random", results_random),
+        ]:
+            _save_arm(run_dir, arm_name, arm_results)
+    else:
+        _save_arm(run_dir, "interchange", results)
+
+
+def _save_arm(run_dir, prefix, results):
     by_label: dict[str, list[dict]] = defaultdict(list)
     for r in results:
         by_label[r["label"]].append(r)
@@ -462,10 +642,11 @@ def run_interchange(
         },
     }
 
-    save_json(run_dir / "interchange_summary.json", summary)
-    save_json(run_dir / "interchange_results.json", results)
+    save_json(run_dir / f"{prefix}_results.json", results)
+    save_json(run_dir / f"{prefix}_summary.json", summary)
 
-    print(f"\nInterchange results ({len(results)} items):")
+    arm_label = prefix.replace("_", " ").title()
+    print(f"\n{arm_label} results ({len(results)} items):")
     o = summary["overall"]
     print(
         f"  Overall: "
