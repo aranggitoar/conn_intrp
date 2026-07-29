@@ -107,6 +107,14 @@ from .interchange import (
     prepare_interchange_items,
     run_interchange,
 )
+from .interchange_analysis import (
+    load_interchange,
+    margins as interchange_margins,
+    failure_decomposition as interchange_failure_decomposition,
+    significance as interchange_significance,
+    direction_asymmetry as interchange_direction_asymmetry,
+    comparison_table as interchange_comparison_table,
+)
 from .semantic_control import compute_reference_norms, run_semantic_control
 from .semantic_control_analysis import (
     all_topk_botk,
@@ -199,6 +207,13 @@ __all__ = [
     "load_image_pairs",
     "prepare_interchange_items",
     "run_interchange",
+    # interchange analysis
+    "load_interchange",
+    "interchange_margins",
+    "interchange_failure_decomposition",
+    "interchange_significance",
+    "interchange_direction_asymmetry",
+    "interchange_comparison_table",
     # cka
     "linear_cka",
 ]
