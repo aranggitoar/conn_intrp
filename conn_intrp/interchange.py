@@ -329,17 +329,34 @@ def coefficient_diagnostic(
 
     def _collect_coefficients(data_items, desc):
         all_coeffs = []
+        skipped = 0
         for i in tqdm(range(0, len(data_items), batch_size),
                       desc=desc):
             batch = data_items[i : i + batch_size]
-            inputs = adapter.preprocess(batch, image_base_path)
-            with torch.no_grad():
-                vision = adapter.extract_vision(inputs)
-                conn_out = adapter.run_connector(vision).float()
-            if bias is not None:
-                conn_out = conn_out - bias.float()
-            coeffs = conn_out @ U
-            all_coeffs.append(coeffs.abs().mean(dim=1).cpu())
+            try:
+                inputs = adapter.preprocess(batch, image_base_path)
+                with torch.no_grad():
+                    vision = adapter.extract_vision(inputs)
+                    conn_out = adapter.run_connector(vision).float()
+                if bias is not None:
+                    conn_out = conn_out - bias.float()
+                coeffs = conn_out @ U
+                all_coeffs.append(coeffs.abs().mean(dim=1).cpu())
+            except Exception:
+                for item in batch:
+                    try:
+                        inputs = adapter.preprocess([item], image_base_path)
+                        with torch.no_grad():
+                            vision = adapter.extract_vision(inputs)
+                            conn_out = adapter.run_connector(vision).float()
+                        if bias is not None:
+                            conn_out = conn_out - bias.float()
+                        coeffs = conn_out @ U
+                        all_coeffs.append(coeffs.abs().mean(dim=1).cpu())
+                    except Exception:
+                        skipped += 1
+        if skipped:
+            print(f"  Skipped {skipped} corrupt/unreadable images")
         return torch.cat(all_coeffs, dim=0)
 
     seen = set()
