@@ -300,6 +300,7 @@ def coefficient_diagnostic(
     *,
     batch_size: int,
     image_base_path: str | Path,
+    reference_base_path: str | Path | None = None,
     directions: list[int],
     n_samples: int = 200,
 ) -> dict:
@@ -317,24 +318,30 @@ def coefficient_diagnostic(
     :param reference_data: Data dicts from the reference dataset
         (DocVQA or OKVQA), same format as adapter.preprocess expects.
     :param batch_size: Images per forward pass.
-    :param image_base_path: Root for image files.
+    :param image_base_path: Root for interchange image files.
+    :param reference_base_path: Root for reference image files.
+        Defaults to *image_base_path* if not set.
     :param directions: DM-identified direction indices to focus on.
     :param n_samples: Max images to sample from each set.
     :returns: Dict with per-direction stats and summary.
     """
     image_base_path = Path(image_base_path)
+    if reference_base_path is None:
+        reference_base_path = image_base_path
+    else:
+        reference_base_path = Path(reference_base_path)
     last_layer = adapter.svd_layers[-1]
     U = last_layer.U.float()
     bias = last_layer.bias
 
-    def _collect_coefficients(data_items, desc):
+    def _collect_coefficients(data_items, base_path, desc):
         all_coeffs = []
         skipped = 0
         for i in tqdm(range(0, len(data_items), batch_size),
                       desc=desc):
             batch = data_items[i : i + batch_size]
             try:
-                inputs = adapter.preprocess(batch, image_base_path)
+                inputs = adapter.preprocess(batch, base_path)
                 with torch.no_grad():
                     vision = adapter.extract_vision(inputs)
                     conn_out = adapter.run_connector(vision).float()
@@ -345,7 +352,7 @@ def coefficient_diagnostic(
             except Exception:
                 for item in batch:
                     try:
-                        inputs = adapter.preprocess([item], image_base_path)
+                        inputs = adapter.preprocess([item], base_path)
                         with torch.no_grad():
                             vision = adapter.extract_vision(inputs)
                             conn_out = adapter.run_connector(vision).float()
@@ -376,8 +383,8 @@ def coefficient_diagnostic(
         reference_data, min(n_samples, len(reference_data))
     )
 
-    ic_coeffs = _collect_coefficients(ic_data, "Interchange images")
-    ref_coeffs = _collect_coefficients(ref_sample, "Reference images")
+    ic_coeffs = _collect_coefficients(ic_data, image_base_path, "Interchange images")
+    ref_coeffs = _collect_coefficients(ref_sample, reference_base_path, "Reference images")
 
     dirs = sorted(directions)
     all_dirs = list(range(U.shape[1]))
