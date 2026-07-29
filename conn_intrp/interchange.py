@@ -476,8 +476,34 @@ def _partial_swap(coeffs_base, coeffs_swap, directions, svd_layer, adapter, laye
     )
 
 
+def _norm_matched_swap(coeffs_base, coeffs_swap, dm_dirs, rand_dirs,
+                       svd_layer, adapter, layer_name):
+    """Swap random directions with perturbation norm matched to the DM swap."""
+    cb = coeffs_base.float()
+    cs = coeffs_swap.float()
+
+    delta_dm = cs[..., dm_dirs] - cb[..., dm_dirs]
+    delta_rand = cs[..., rand_dirs] - cb[..., rand_dirs]
+
+    norm_dm = delta_dm.flatten(1).norm(dim=1).view(-1, 1, 1)
+    norm_rand = delta_rand.flatten(1).norm(dim=1).view(-1, 1, 1)
+    scale = norm_dm / (norm_rand + 1e-8)
+
+    cm = cb.clone()
+    cm[..., rand_dirs] = cb[..., rand_dirs] + scale * delta_rand
+
+    U = svd_layer.U.float()
+    bias = svd_layer.bias
+    layer_out = cm @ U.T
+    if bias is not None:
+        layer_out = layer_out + bias.float()
+    return adapter.forward_connector_from(
+        layer_name, layer_out.to(adapter.compute_dtype)
+    )
+
+
 def _process_batch(adapter, batch, tokenizer, image_base_path,
-                   directions=None, rand_gen=None):
+                   directions=None, rand_gen=None, arms=("partial", "random")):
     """Run interchange on a single batch, return list of result dicts.
 
     When *directions* is None, performs a full connector output swap.
@@ -602,7 +628,7 @@ def _process_batch(adapter, batch, tokenizer, image_base_path,
             })
         return results
 
-    # Partial + random arms — per layer
+    # Partial / random / norm-matched arms — per layer
     svd_map = {l.name: l for l in adapter.svd_layers}
 
     with torch.no_grad():
@@ -613,23 +639,35 @@ def _process_batch(adapter, batch, tokenizer, image_base_path,
     for layer_name, layer_dirs in directions.items():
         svd_layer = svd_map[layer_name]
 
-        conn_partial = _partial_swap(
-            coeffs_base[layer_name], coeffs_swap[layer_name],
-            layer_dirs, svd_layer, adapter, layer_name,
-        )
-
+        # Always draw random dirs to keep generator state deterministic
         rand_dirs = torch.randperm(
             svd_layer.n_dirs, generator=rand_gen
         )[:len(layer_dirs)].tolist()
-        conn_random = _partial_swap(
-            coeffs_base[layer_name], coeffs_swap[layer_name],
-            rand_dirs, svd_layer, adapter, layer_name,
-        )
 
-        for arm_name, conn_swapped, is_random in [
-            (f"partial_{layer_name}", conn_partial, False),
-            (f"random_{layer_name}", conn_random, True),
-        ]:
+        to_score = []
+
+        if "partial" in arms:
+            conn_partial = _partial_swap(
+                coeffs_base[layer_name], coeffs_swap[layer_name],
+                layer_dirs, svd_layer, adapter, layer_name,
+            )
+            to_score.append((f"partial_{layer_name}", conn_partial, False))
+
+        if "random" in arms:
+            conn_random = _partial_swap(
+                coeffs_base[layer_name], coeffs_swap[layer_name],
+                rand_dirs, svd_layer, adapter, layer_name,
+            )
+            to_score.append((f"random_{layer_name}", conn_random, True))
+
+        if "norm_matched" in arms:
+            conn_nm = _norm_matched_swap(
+                coeffs_base[layer_name], coeffs_swap[layer_name],
+                layer_dirs, rand_dirs, svd_layer, adapter, layer_name,
+            )
+            to_score.append((f"norm_matched_{layer_name}", conn_nm, True))
+
+        for arm_name, conn_swapped, is_random in to_score:
             with torch.no_grad():
                 embeds = adapter.merge_embeds(
                     inputs_base, text_embeds, conn_swapped
@@ -688,6 +726,7 @@ def run_interchange(
     run_dir: str | Path,
     directions: dict[str, list[int]] | list[int] | None = None,
     seed: int = 42,
+    arms: tuple[str, ...] = ("partial", "random"),
 ) -> None:
     """Interchange intervention on connector outputs.
 
@@ -712,6 +751,7 @@ def run_interchange(
     - Full arm: ``interchange_results.json``
     - Partial arm: ``partial_<layer>_results.json``
     - Random arm: ``random_<layer>_results.json``
+    - Norm-matched arm: ``norm_matched_<layer>_results.json``
 
     :param adapter: Model adapter instance.
     :param items: Output of :func:`prepare_interchange_items`.
@@ -721,6 +761,9 @@ def run_interchange(
     :param directions: SVD direction indices to swap, per layer.
         ``None`` for full swap.
     :param seed: Random seed for the random arm baseline.
+    :param arms: Which arms to run when *directions* is set.
+        Default ``("partial", "random")``.  Add ``"norm_matched"``
+        for the norm-matched random baseline.
     """
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -755,6 +798,7 @@ def run_interchange(
             new_dirs = merged
         meta["directions"] = new_dirs
         meta["seed"] = seed
+        meta["arms"] = list(arms)
     update_metadata(run_dir, meta)
 
     rand_gen = torch.Generator().manual_seed(seed) if is_partial else None
@@ -762,8 +806,8 @@ def run_interchange(
     if is_partial:
         result_sets: dict[str, list[dict]] = {}
         for ln in directions:
-            result_sets[f"partial_{ln}"] = []
-            result_sets[f"random_{ln}"] = []
+            for arm in arms:
+                result_sets[f"{arm}_{ln}"] = []
     else:
         results: list[dict] = []
     skipped: list[str] = []
@@ -779,7 +823,7 @@ def run_interchange(
         try:
             batch_out = _process_batch(
                 adapter, batch, tokenizer, image_base_path,
-                directions=directions, rand_gen=rand_gen,
+                directions=directions, rand_gen=rand_gen, arms=arms,
             )
             if is_partial:
                 for arm_name, arm_items in batch_out.items():
@@ -791,7 +835,7 @@ def run_interchange(
                 try:
                     single = _process_batch(
                         adapter, [item], tokenizer, image_base_path,
-                        directions=directions, rand_gen=rand_gen,
+                        directions=directions, rand_gen=rand_gen, arms=arms,
                     )
                     if is_partial:
                         for arm_name, arm_items in single.items():
