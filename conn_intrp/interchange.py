@@ -775,6 +775,8 @@ def run_interchange(
 
     tokenizer = adapter.processor.tokenizer
 
+    if isinstance(arms, str):
+        arms = (arms,)
     if isinstance(directions, list):
         directions = {adapter.svd_layers[-1].name: directions}
     is_partial = directions is not None
