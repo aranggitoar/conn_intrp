@@ -301,17 +301,22 @@ def coefficient_diagnostic(
     batch_size: int,
     image_base_path: str | Path,
     reference_base_path: str | Path | None = None,
-    directions: list[int],
+    directions: dict[str, list[int]] | list[int],
     n_samples: int = 200,
 ) -> dict:
     """Compare SVD coefficient magnitudes on interchange images vs
     reference dataset images.
 
-    Projects both sets of images onto the last SVD layer's directions
-    and reports per-direction mean absolute coefficient for each set.
+    Projects both sets of images onto each layer's SVD directions and
+    reports per-direction mean absolute coefficient for each set.
     If the DM-identified directions have comparable magnitudes on
     interchange images and reference images, the partial-arm experiment
     is valid despite using a different image domain.
+
+    *directions* can be:
+
+    - ``dict[str, list[int]]``: layer name → direction indices.
+    - ``list[int]``: shorthand for last-layer-only.
 
     :param adapter: Model adapter instance.
     :param interchange_items: Output of :func:`prepare_interchange_items`.
@@ -321,21 +326,23 @@ def coefficient_diagnostic(
     :param image_base_path: Root for interchange image files.
     :param reference_base_path: Root for reference image files.
         Defaults to *image_base_path* if not set.
-    :param directions: DM-identified direction indices to focus on.
+    :param directions: DM-identified direction indices, per layer.
     :param n_samples: Max images to sample from each set.
-    :returns: Dict with per-direction stats and summary.
+    :returns: Dict with per-layer coefficient stats.
     """
     image_base_path = Path(image_base_path)
     if reference_base_path is None:
         reference_base_path = image_base_path
     else:
         reference_base_path = Path(reference_base_path)
-    last_layer = adapter.svd_layers[-1]
-    U = last_layer.U.float()
-    bias = last_layer.bias
+
+    if isinstance(directions, list):
+        directions = {adapter.svd_layers[-1].name: directions}
+
+    layer_names = list(directions.keys())
 
     def _collect_coefficients(data_items, base_path, desc):
-        all_coeffs = []
+        all_coeffs = {ln: [] for ln in layer_names}
         skipped = 0
         for i in tqdm(range(0, len(data_items), batch_size),
                       desc=desc):
@@ -343,28 +350,28 @@ def coefficient_diagnostic(
             try:
                 inputs = adapter.preprocess(batch, base_path)
                 with torch.no_grad():
-                    vision = adapter.extract_vision(inputs)
-                    conn_out = adapter.run_connector(vision).float()
-                if bias is not None:
-                    conn_out = conn_out - bias.float()
-                coeffs = conn_out @ U
-                all_coeffs.append(coeffs.abs().mean(dim=1).cpu())
+                    coeffs = adapter.compute_coefficients_per_layer(inputs)
+                for ln in layer_names:
+                    all_coeffs[ln].append(
+                        coeffs[ln].abs().mean(dim=1).cpu()
+                    )
             except Exception:
                 for item in batch:
                     try:
                         inputs = adapter.preprocess([item], base_path)
                         with torch.no_grad():
-                            vision = adapter.extract_vision(inputs)
-                            conn_out = adapter.run_connector(vision).float()
-                        if bias is not None:
-                            conn_out = conn_out - bias.float()
-                        coeffs = conn_out @ U
-                        all_coeffs.append(coeffs.abs().mean(dim=1).cpu())
+                            coeffs = adapter.compute_coefficients_per_layer(
+                                inputs
+                            )
+                        for ln in layer_names:
+                            all_coeffs[ln].append(
+                                coeffs[ln].abs().mean(dim=1).cpu()
+                            )
                     except Exception:
                         skipped += 1
         if skipped:
             print(f"  Skipped {skipped} corrupt/unreadable images")
-        return torch.cat(all_coeffs, dim=0)
+        return {ln: torch.cat(all_coeffs[ln], dim=0) for ln in layer_names}
 
     seen = set()
     ic_data = []
@@ -383,76 +390,90 @@ def coefficient_diagnostic(
         reference_data, min(n_samples, len(reference_data))
     )
 
-    ic_coeffs = _collect_coefficients(ic_data, image_base_path, "Interchange images")
-    ref_coeffs = _collect_coefficients(ref_sample, reference_base_path, "Reference images")
+    ic_coeffs = _collect_coefficients(
+        ic_data, image_base_path, "Interchange images"
+    )
+    ref_coeffs = _collect_coefficients(
+        ref_sample, reference_base_path, "Reference images"
+    )
 
-    dirs = sorted(directions)
-    all_dirs = list(range(U.shape[1]))
-    other_dirs = sorted(set(all_dirs) - set(dirs))
-
-    ic_dm = ic_coeffs[:, dirs].mean(dim=0).numpy()
-    ref_dm = ref_coeffs[:, dirs].mean(dim=0).numpy()
-    ic_other = ic_coeffs[:, other_dirs].mean(dim=0).numpy()
-    ref_other = ref_coeffs[:, other_dirs].mean(dim=0).numpy()
-
+    svd_map = {l.name: l for l in adapter.svd_layers}
     result = {
         "n_interchange": len(ic_data),
         "n_reference": len(ref_sample),
-        "n_dm_directions": len(dirs),
-        "dm_directions": {
-            "interchange_mean": float(ic_dm.mean()),
-            "interchange_std": float(ic_dm.std()),
-            "reference_mean": float(ref_dm.mean()),
-            "reference_std": float(ref_dm.std()),
-            "ratio": float(ic_dm.mean() / ref_dm.mean())
-            if ref_dm.mean() > 0
-            else None,
-        },
-        "other_directions": {
-            "interchange_mean": float(ic_other.mean()),
-            "reference_mean": float(ref_other.mean()),
-            "ratio": float(ic_other.mean() / ref_other.mean())
-            if ref_other.mean() > 0
-            else None,
-        },
+        "layers": {},
     }
 
     print(f"\nCoefficient diagnostic ({len(ic_data)} interchange, "
           f"{len(ref_sample)} reference images):")
-    d = result["dm_directions"]
-    o = result["other_directions"]
-    print(f"  DM directions ({len(dirs)}):")
-    print(f"    interchange: {d['interchange_mean']:.4f} ± {d['interchange_std']:.4f}")
-    print(f"    reference:   {d['reference_mean']:.4f} ± {d['reference_std']:.4f}")
-    print(f"    ratio:       {d['ratio']:.2f}")
-    print(f"  Other directions ({len(other_dirs)}):")
-    print(f"    interchange: {o['interchange_mean']:.4f}")
-    print(f"    reference:   {o['reference_mean']:.4f}")
-    print(f"    ratio:       {o['ratio']:.2f}")
+
+    for layer_name, layer_dirs in directions.items():
+        svd_layer = svd_map[layer_name]
+        dirs = sorted(layer_dirs)
+        all_dirs = list(range(svd_layer.n_dirs))
+        other_dirs = sorted(set(all_dirs) - set(dirs))
+
+        ic_dm = ic_coeffs[layer_name][:, dirs].mean(dim=0).numpy()
+        ref_dm = ref_coeffs[layer_name][:, dirs].mean(dim=0).numpy()
+        ic_other = ic_coeffs[layer_name][:, other_dirs].mean(dim=0).numpy()
+        ref_other = ref_coeffs[layer_name][:, other_dirs].mean(dim=0).numpy()
+
+        layer_result = {
+            "n_dm_directions": len(dirs),
+            "dm_directions": {
+                "interchange_mean": float(ic_dm.mean()),
+                "interchange_std": float(ic_dm.std()),
+                "reference_mean": float(ref_dm.mean()),
+                "reference_std": float(ref_dm.std()),
+                "ratio": float(ic_dm.mean() / ref_dm.mean())
+                if ref_dm.mean() > 0
+                else None,
+            },
+            "other_directions": {
+                "interchange_mean": float(ic_other.mean()),
+                "reference_mean": float(ref_other.mean()),
+                "ratio": float(ic_other.mean() / ref_other.mean())
+                if ref_other.mean() > 0
+                else None,
+            },
+        }
+        result["layers"][layer_name] = layer_result
+
+        d = layer_result["dm_directions"]
+        o = layer_result["other_directions"]
+        print(f"  {layer_name} ({len(dirs)} DM directions):")
+        print(f"    DM:    interchange {d['interchange_mean']:.4f} "
+              f"± {d['interchange_std']:.4f}, "
+              f"reference {d['reference_mean']:.4f} "
+              f"± {d['reference_std']:.4f}, "
+              f"ratio {d['ratio']:.2f}")
+        print(f"    Other: interchange {o['interchange_mean']:.4f}, "
+              f"reference {o['reference_mean']:.4f}, "
+              f"ratio {o['ratio']:.2f}")
 
     return result
 
 
-def _partial_swap(conn_out_base, conn_out_swap, directions, svd_layer):
-    """Swap specific SVD direction coefficients between two connector outputs."""
+def _partial_swap(coeffs_base, coeffs_swap, directions, svd_layer, adapter, layer_name):
+    """Swap specific SVD direction coefficients and forward to final connector output.
+
+    Works at the coefficient level: swaps the listed direction
+    coefficients from *coeffs_swap* into *coeffs_base*, reconstructs
+    the layer output, and propagates through any remaining connector
+    layers via :meth:`~ModelAdapter.forward_connector_from`.
+    """
     U = svd_layer.U.float()
     bias = svd_layer.bias
-    base_f = conn_out_base.float()
-    swap_f = conn_out_swap.float()
-    if bias is not None:
-        base_f = base_f - bias.float()
-        swap_f = swap_f - bias.float()
-    coeff_base = base_f @ U
-    coeff_swap = swap_f @ U
 
-    coeff_mixed = coeff_base.clone()
-    dirs = list(directions)
-    coeff_mixed[..., dirs] = coeff_swap[..., dirs]
+    cm = coeffs_base.float().clone()
+    cm[..., list(directions)] = coeffs_swap.float()[..., list(directions)]
 
-    out = coeff_mixed @ U.T
+    layer_out = cm @ U.T
     if bias is not None:
-        out = out + bias.float()
-    return out.to(conn_out_base.dtype)
+        layer_out = layer_out + bias.float()
+    return adapter.forward_connector_from(
+        layer_name, layer_out.to(adapter.compute_dtype)
+    )
 
 
 def _process_batch(adapter, batch, tokenizer, image_base_path,
@@ -460,9 +481,9 @@ def _process_batch(adapter, batch, tokenizer, image_base_path,
     """Run interchange on a single batch, return list of result dicts.
 
     When *directions* is None, performs a full connector output swap.
-    When *directions* is a list of direction indices, swaps only those
-    directions (partial arm) and also swaps a random set of the same
-    size (random arm).
+    When *directions* is a ``dict[str, list[int]]`` mapping layer names
+    to direction indices, swaps those directions per layer (partial arm)
+    and also swaps a random set of the same size per layer (random arm).
     """
     actual = len(batch)
 
@@ -581,72 +602,79 @@ def _process_batch(adapter, batch, tokenizer, image_base_path,
             })
         return results
 
-    # Partial + random arms
-    last_layer = adapter.svd_layers[-1]
-    n_dirs = last_layer.U.shape[1]
+    # Partial + random arms — per layer
+    svd_map = {l.name: l for l in adapter.svd_layers}
 
-    conn_partial = _partial_swap(
-        conn_out_base, conn_out_swap, directions, last_layer
-    )
-
-    rand_dirs = torch.randperm(n_dirs, generator=rand_gen)[
-        : len(directions)
-    ].tolist()
-    conn_random = _partial_swap(
-        conn_out_base, conn_out_swap, rand_dirs, last_layer
-    )
-
-    arms = [
-        ("partial", conn_partial),
-        ("random", conn_random),
-    ]
+    with torch.no_grad():
+        coeffs_base = adapter.compute_coefficients_per_layer(inputs_base)
+        coeffs_swap = adapter.compute_coefficients_per_layer(inputs_swap)
 
     all_results = {}
-    for arm_name, conn_swapped in arms:
-        with torch.no_grad():
-            embeds = adapter.merge_embeds(
-                inputs_base, text_embeds, conn_swapped
-            )
-            preds, logits = adapter.generate_with_logits(
-                embeds, attention_mask
-            )
-        log_probs = F.log_softmax(logits, dim=-1)
-        swap_scores = _score_condition(
-            batch, tokenizer, preds, log_probs, probs_orig, arm_name
+    for layer_name, layer_dirs in directions.items():
+        svd_layer = svd_map[layer_name]
+
+        conn_partial = _partial_swap(
+            coeffs_base[layer_name], coeffs_swap[layer_name],
+            layer_dirs, svd_layer, adapter, layer_name,
         )
 
-        arm_results = []
-        for j in range(actual):
-            item = batch[j]
-            o = orig_scores[j]
-            s = swap_scores[j]
-            lp = {**o["logprobs_orig"], **s["logprobs_swap"]}
-            arm_results.append({
-                "label": item["label"],
-                "pair_id": item["pair_id"],
-                "direction": item["direction"],
-                "question": item["question"],
-                "base_answer": item["base_answer"],
-                "swap_answer": item["swap_answer"],
-                "arm": arm_name,
-                "pred_orig": o["pred_orig"],
-                "pred_swap": s["pred_swap"],
-                "kl": s["kl"],
-                "logprobs": lp,
-                "orig_prefers_base": o["orig_prefers_base"],
-                "swap_prefers_swap": s["swap_prefers_swap"],
-                "interchange_success_logprob": (
-                    o["orig_prefers_base"] and s["swap_prefers_swap"]
-                ),
-                "orig_text_has_base": o["orig_text_has_base"],
-                "swap_text_has_swap": s["swap_text_has_swap"],
-                "interchange_success_text": (
-                    o["orig_text_has_base"] and s["swap_text_has_swap"]
-                ),
-            })
-            if arm_name == "random":
-                arm_results[-1]["random_directions"] = rand_dirs
-        all_results[arm_name] = arm_results
+        rand_dirs = torch.randperm(
+            svd_layer.n_dirs, generator=rand_gen
+        )[:len(layer_dirs)].tolist()
+        conn_random = _partial_swap(
+            coeffs_base[layer_name], coeffs_swap[layer_name],
+            rand_dirs, svd_layer, adapter, layer_name,
+        )
+
+        for arm_name, conn_swapped, is_random in [
+            (f"partial_{layer_name}", conn_partial, False),
+            (f"random_{layer_name}", conn_random, True),
+        ]:
+            with torch.no_grad():
+                embeds = adapter.merge_embeds(
+                    inputs_base, text_embeds, conn_swapped
+                )
+                preds, logits = adapter.generate_with_logits(
+                    embeds, attention_mask
+                )
+            log_probs = F.log_softmax(logits, dim=-1)
+            swap_scores = _score_condition(
+                batch, tokenizer, preds, log_probs, probs_orig, arm_name
+            )
+
+            arm_results = []
+            for j in range(actual):
+                item = batch[j]
+                o = orig_scores[j]
+                s = swap_scores[j]
+                lp = {**o["logprobs_orig"], **s["logprobs_swap"]}
+                arm_results.append({
+                    "label": item["label"],
+                    "pair_id": item["pair_id"],
+                    "direction": item["direction"],
+                    "question": item["question"],
+                    "base_answer": item["base_answer"],
+                    "swap_answer": item["swap_answer"],
+                    "arm": arm_name,
+                    "layer": layer_name,
+                    "pred_orig": o["pred_orig"],
+                    "pred_swap": s["pred_swap"],
+                    "kl": s["kl"],
+                    "logprobs": lp,
+                    "orig_prefers_base": o["orig_prefers_base"],
+                    "swap_prefers_swap": s["swap_prefers_swap"],
+                    "interchange_success_logprob": (
+                        o["orig_prefers_base"] and s["swap_prefers_swap"]
+                    ),
+                    "orig_text_has_base": o["orig_text_has_base"],
+                    "swap_text_has_swap": s["swap_text_has_swap"],
+                    "interchange_success_text": (
+                        o["orig_text_has_base"] and s["swap_text_has_swap"]
+                    ),
+                })
+                if is_random:
+                    arm_results[-1]["random_directions"] = rand_dirs
+            all_results[arm_name] = arm_results
 
     return all_results
 
@@ -658,7 +686,7 @@ def run_interchange(
     batch_size: int,
     image_base_path: str | Path,
     run_dir: str | Path,
-    directions: list[int] | None = None,
+    directions: dict[str, list[int]] | list[int] | None = None,
     seed: int = 42,
 ) -> None:
     """Interchange intervention on connector outputs.
@@ -666,25 +694,32 @@ def run_interchange(
     When *directions* is ``None`` (default), performs a full connector
     output swap — the existing full-arm experiment.
 
-    When *directions* is a list of SVD direction indices, performs a
-    **partial-arm** interchange: only the listed directions' coefficients
-    are swapped (decomposed on the last SVD layer), while remaining
-    directions keep the base image's values.  A **random arm** with the
-    same number of randomly chosen directions is always run alongside
-    as a baseline.
+    When *directions* is provided, performs a **partial-arm** interchange
+    per layer: only the listed directions' coefficients are swapped,
+    while remaining directions keep the base image's values.  A
+    **random arm** with the same number of randomly chosen directions
+    is always run alongside as a baseline.
+
+    *directions* can be:
+
+    - ``dict[str, list[int]]``: layer name → direction indices.
+      Each layer gets its own partial + random arm.
+    - ``list[int]``: shorthand for last-layer-only (converted to
+      ``{last_layer_name: directions}``).
 
     Results are saved as:
 
-    - Full arm: ``interchange_results.json`` / ``interchange_summary.json``
-    - Partial arm: ``partial_interchange_results.json`` / ``partial_interchange_summary.json``
-    - Random arm: ``random_interchange_results.json`` / ``random_interchange_summary.json``
+    - Full arm: ``interchange_results.json``
+    - Partial arm: ``partial_<layer>_results.json``
+    - Random arm: ``random_<layer>_results.json``
 
     :param adapter: Model adapter instance.
     :param items: Output of :func:`prepare_interchange_items`.
     :param batch_size: Images per forward pass.
     :param image_base_path: Root directory for image files.
     :param run_dir: Output directory.
-    :param directions: SVD direction indices to swap. ``None`` for full swap.
+    :param directions: SVD direction indices to swap, per layer.
+        ``None`` for full swap.
     :param seed: Random seed for the random arm baseline.
     """
     run_dir = Path(run_dir)
@@ -692,6 +727,9 @@ def run_interchange(
     image_base_path = Path(image_base_path)
 
     tokenizer = adapter.processor.tokenizer
+
+    if isinstance(directions, list):
+        directions = {adapter.svd_layers[-1].name: directions}
     is_partial = directions is not None
 
     meta = dict(
@@ -703,16 +741,29 @@ def run_interchange(
         labels=sorted(set(item["label"] for item in items)),
     )
     if is_partial:
-        meta["n_directions"] = len(directions)
-        meta["n_total_directions"] = adapter.svd_layers[-1].U.shape[1]
+        new_dirs = {
+            ln: {"n": len(dirs), "indices": sorted(dirs)}
+            for ln, dirs in directions.items()
+        }
+        meta_path = run_dir / "metadata.json"
+        if meta_path.exists():
+            import json as _json
+            with open(meta_path) as f:
+                old_meta = _json.load(f)
+            merged = dict(old_meta.get("directions", {}))
+            merged.update(new_dirs)
+            new_dirs = merged
+        meta["directions"] = new_dirs
         meta["seed"] = seed
     update_metadata(run_dir, meta)
 
     rand_gen = torch.Generator().manual_seed(seed) if is_partial else None
 
     if is_partial:
-        results_partial: list[dict] = []
-        results_random: list[dict] = []
+        result_sets: dict[str, list[dict]] = {}
+        for ln in directions:
+            result_sets[f"partial_{ln}"] = []
+            result_sets[f"random_{ln}"] = []
     else:
         results: list[dict] = []
     skipped: list[str] = []
@@ -731,8 +782,8 @@ def run_interchange(
                 directions=directions, rand_gen=rand_gen,
             )
             if is_partial:
-                results_partial.extend(batch_out["partial"])
-                results_random.extend(batch_out["random"])
+                for arm_name, arm_items in batch_out.items():
+                    result_sets[arm_name].extend(arm_items)
             else:
                 results.extend(batch_out)
         except Exception:
@@ -743,8 +794,8 @@ def run_interchange(
                         directions=directions, rand_gen=rand_gen,
                     )
                     if is_partial:
-                        results_partial.extend(single["partial"])
-                        results_random.extend(single["random"])
+                        for arm_name, arm_items in single.items():
+                            result_sets[arm_name].extend(arm_items)
                     else:
                         results.extend(single)
                 except Exception:
@@ -761,10 +812,7 @@ def run_interchange(
             print(f"  ... and {len(skipped) - 20} more")
 
     if is_partial:
-        for arm_name, arm_results in [
-            ("partial", results_partial),
-            ("random", results_random),
-        ]:
+        for arm_name, arm_results in sorted(result_sets.items()):
             _save_arm(run_dir, arm_name, arm_results)
     else:
         _save_arm(run_dir, "interchange", results)
