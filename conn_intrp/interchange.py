@@ -534,14 +534,25 @@ def _process_batch(adapter, batch, tokenizer, image_base_path,
     inputs_swap = adapter.preprocess(swap_data, image_base_path)
 
     with torch.no_grad():
-        vision_base = adapter.extract_vision(inputs_base)
-        conn_out_base = adapter.run_connector(vision_base)
-
-        vision_swap = adapter.extract_vision(inputs_swap)
-        conn_out_swap = adapter.run_connector(vision_swap)
-
         text_embeds = adapter.get_text_embeds(inputs_base)
         attention_mask = inputs_base["attention_mask"]
+
+        if directions is None:
+            vision_base = adapter.extract_vision(inputs_base)
+            conn_out_base = adapter.run_connector(vision_base)
+
+            vision_swap = adapter.extract_vision(inputs_swap)
+            conn_out_swap = adapter.run_connector(vision_swap)
+        else:
+            coeffs_base = adapter.compute_coefficients_per_layer(inputs_base)
+            coeffs_swap = adapter.compute_coefficients_per_layer(inputs_swap)
+
+            last_layer = adapter.svd_layers[-1]
+            last_coeff = coeffs_base[last_layer.name].float()
+            conn_out_base = last_coeff @ last_layer.U.float().T
+            if last_layer.bias is not None:
+                conn_out_base = conn_out_base + last_layer.bias.float()
+            conn_out_base = conn_out_base.to(adapter.compute_dtype)
 
         embeds_orig = adapter.merge_embeds(
             inputs_base, text_embeds, conn_out_base
@@ -553,7 +564,6 @@ def _process_batch(adapter, batch, tokenizer, image_base_path,
     log_probs_orig = F.log_softmax(logits_orig, dim=-1)
     probs_orig = F.softmax(logits_orig, dim=-1)
 
-    # Score the original (baseline) condition
     orig_scores = []
     for j in range(actual):
         item = batch[j]
@@ -584,7 +594,6 @@ def _process_batch(adapter, batch, tokenizer, image_base_path,
         })
 
     if directions is None:
-        # Full swap
         with torch.no_grad():
             embeds_swapped = adapter.merge_embeds(
                 inputs_base, text_embeds, conn_out_swap
@@ -628,18 +637,13 @@ def _process_batch(adapter, batch, tokenizer, image_base_path,
             })
         return results
 
-    # Partial / random / norm-matched arms — per layer
     svd_map = {l.name: l for l in adapter.svd_layers}
-
-    with torch.no_grad():
-        coeffs_base = adapter.compute_coefficients_per_layer(inputs_base)
-        coeffs_swap = adapter.compute_coefficients_per_layer(inputs_swap)
 
     all_results = {}
     for layer_name, layer_dirs in directions.items():
         svd_layer = svd_map[layer_name]
 
-        # Always draw random dirs to keep generator state deterministic
+        # Draw unconditionally to keep generator state deterministic
         rand_dirs = torch.randperm(
             svd_layer.n_dirs, generator=rand_gen
         )[:len(layer_dirs)].tolist()
