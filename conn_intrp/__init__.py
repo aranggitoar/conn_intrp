@@ -103,6 +103,7 @@ from .output import (
     update_metadata,
 )
 from .interchange import (
+    coefficient_diagnostic,
     load_image_pairs,
     prepare_interchange_items,
     run_interchange,
@@ -204,6 +205,7 @@ __all__ = [
     "comparison_table",
     "all_topk_botk",
     # interchange
+    "coefficient_diagnostic",
     "load_image_pairs",
     "prepare_interchange_items",
     "run_interchange",

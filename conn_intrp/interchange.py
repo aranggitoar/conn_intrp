@@ -24,6 +24,8 @@ Main Functions:
     prepare_interchange_items: Generate interchange items with
         cloze prompts from SVO triplet pairs.
     run_interchange: Swap connector outputs and measure response.
+    coefficient_diagnostic: Compare SVD coefficient magnitudes
+        between interchange images and reference dataset images.
 """
 
 import math
@@ -289,6 +291,122 @@ def _score_condition(
             "swap_text_has_swap": swap_has_swap,
         })
     return results
+
+
+def coefficient_diagnostic(
+    adapter: ModelAdapter,
+    interchange_items: list[dict],
+    reference_data: list[dict],
+    *,
+    batch_size: int,
+    image_base_path: str | Path,
+    directions: list[int],
+    n_samples: int = 200,
+) -> dict:
+    """Compare SVD coefficient magnitudes on interchange images vs
+    reference dataset images.
+
+    Projects both sets of images onto the last SVD layer's directions
+    and reports per-direction mean absolute coefficient for each set.
+    If the DM-identified directions have comparable magnitudes on
+    interchange images and reference images, the partial-arm experiment
+    is valid despite using a different image domain.
+
+    :param adapter: Model adapter instance.
+    :param interchange_items: Output of :func:`prepare_interchange_items`.
+    :param reference_data: Data dicts from the reference dataset
+        (DocVQA or OKVQA), same format as adapter.preprocess expects.
+    :param batch_size: Images per forward pass.
+    :param image_base_path: Root for image files.
+    :param directions: DM-identified direction indices to focus on.
+    :param n_samples: Max images to sample from each set.
+    :returns: Dict with per-direction stats and summary.
+    """
+    image_base_path = Path(image_base_path)
+    last_layer = adapter.svd_layers[-1]
+    U = last_layer.U.float()
+    bias = last_layer.bias
+
+    def _collect_coefficients(data_items, desc):
+        all_coeffs = []
+        for i in tqdm(range(0, len(data_items), batch_size),
+                      desc=desc):
+            batch = data_items[i : i + batch_size]
+            inputs = adapter.preprocess(batch, image_base_path)
+            with torch.no_grad():
+                vision = adapter.extract_vision(inputs)
+                conn_out = adapter.run_connector(vision).float()
+            if bias is not None:
+                conn_out = conn_out - bias.float()
+            coeffs = conn_out @ U
+            all_coeffs.append(coeffs.abs().mean(dim=1).cpu())
+        return torch.cat(all_coeffs, dim=0)
+
+    seen = set()
+    ic_data = []
+    for item in interchange_items:
+        img = item["base_image"]
+        if img not in seen and len(ic_data) < n_samples:
+            seen.add(img)
+            ic_data.append({
+                "image": img,
+                "question": item["question"],
+                "answers": [item["base_answer"]],
+            })
+
+    import random
+    ref_sample = random.sample(
+        reference_data, min(n_samples, len(reference_data))
+    )
+
+    ic_coeffs = _collect_coefficients(ic_data, "Interchange images")
+    ref_coeffs = _collect_coefficients(ref_sample, "Reference images")
+
+    dirs = sorted(directions)
+    all_dirs = list(range(U.shape[1]))
+    other_dirs = sorted(set(all_dirs) - set(dirs))
+
+    ic_dm = ic_coeffs[:, dirs].mean(dim=0).numpy()
+    ref_dm = ref_coeffs[:, dirs].mean(dim=0).numpy()
+    ic_other = ic_coeffs[:, other_dirs].mean(dim=0).numpy()
+    ref_other = ref_coeffs[:, other_dirs].mean(dim=0).numpy()
+
+    result = {
+        "n_interchange": len(ic_data),
+        "n_reference": len(ref_sample),
+        "n_dm_directions": len(dirs),
+        "dm_directions": {
+            "interchange_mean": float(ic_dm.mean()),
+            "interchange_std": float(ic_dm.std()),
+            "reference_mean": float(ref_dm.mean()),
+            "reference_std": float(ref_dm.std()),
+            "ratio": float(ic_dm.mean() / ref_dm.mean())
+            if ref_dm.mean() > 0
+            else None,
+        },
+        "other_directions": {
+            "interchange_mean": float(ic_other.mean()),
+            "reference_mean": float(ref_other.mean()),
+            "ratio": float(ic_other.mean() / ref_other.mean())
+            if ref_other.mean() > 0
+            else None,
+        },
+    }
+
+    print(f"\nCoefficient diagnostic ({len(ic_data)} interchange, "
+          f"{len(ref_sample)} reference images):")
+    d = result["dm_directions"]
+    o = result["other_directions"]
+    print(f"  DM directions ({len(dirs)}):")
+    print(f"    interchange: {d['interchange_mean']:.4f} ± {d['interchange_std']:.4f}")
+    print(f"    reference:   {d['reference_mean']:.4f} ± {d['reference_std']:.4f}")
+    print(f"    ratio:       {d['ratio']:.2f}")
+    print(f"  Other directions ({len(other_dirs)}):")
+    print(f"    interchange: {o['interchange_mean']:.4f}")
+    print(f"    reference:   {o['reference_mean']:.4f}")
+    print(f"    ratio:       {o['ratio']:.2f}")
+
+    return result
 
 
 def _partial_swap(conn_out_base, conn_out_swap, directions, svd_layer):
