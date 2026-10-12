@@ -2,14 +2,15 @@
 
 Mechanistic interpretability of cross-modal connectors in Vision-Language Models.
 
-Analyses connector layers via SVD decomposition, directional masking, mean ablation, and delta-logit extraction. Currently supports **SmolVLM2** (single linear connector) and **InternVL3.5** (MLP connector), benchmarked on DocVQA.
+Analyses connector layers via SVD decomposition, directional masking, mean ablation, and delta-logit extraction. Currently supports **SmolVLM2** (single linear connector) and **InternVL3.5** (MLP connector), benchmarked on DocVQA and OK-VQA.
 
 ## Pipeline
 
 | Phase | Module | Description |
 |-------|--------|-------------|
 | 1 | `conn_intrp.dm` | Directional masking, learn per-direction importance masks via projected SGD |
-| 2 | `conn_intrp.ablation` | Mean ablation, replace directions with mean, measure differences
+| 2 | `conn_intrp.ablation` | Mean ablation, replace directions with mean, measure differences |
+| 2 | `conn_intrp.interchange` | Interchange intervention, swap connector outputs between paired images |
 | 3 | `conn_intrp.spatial_probe` | Spatial probe, per-patch cosine similarity with right singular vectors |
 
 ## Installation
@@ -45,12 +46,14 @@ run_dm(
 conn_intrp/
     __init__.py          # Public API re-exports
     config.py            # DirectionalMaskingConfig dataclass + DM experiment CSV logging
-    data.py              # DocVQA loading + ANLS scoring
+    data.py              # DocVQA + OK-VQA loading, ANLS scoring
     output.py            # Run directories, JSON serialization, checkpointing
     dm.py                # directional masking loop
     dm_analysis.py       # directional masking analysis functions
     ablation.py          # mean ablation + ANLS + delta-logit
     ablation_analysis.py # mean ablation analysis functions
+    interchange.py       # interchange intervention experiment
+    interchange_analysis.py # interchange analysis functions
     spatial_probe.py     # spatial probe projections + heatmaps
     probe_analysis.py    # spatial probe analysis functions
     models/
