@@ -116,10 +116,29 @@ def joint_kl_table(
         joint = data.get("joint", {})
         sets = joint.get("sets", {})
         if active_key not in sets or random_key not in sets:
+            for layer in _layer_names(abl):
+                rows.append({
+                    "category": cat,
+                    "layer": layer,
+                    "n_dirs": 0,
+                    "active_kl": 0.0,
+                    "random_kl": 0.0,
+                    "ratio": float("nan"),
+                })
             continue
         for layer in sets[active_key]:
             act = sets[active_key][layer]
             rnd = sets[random_key][layer]
+            if act.get("n_directions", 0) == 0:
+                rows.append({
+                    "category": cat,
+                    "layer": layer,
+                    "n_dirs": 0,
+                    "active_kl": 0.0,
+                    "random_kl": 0.0,
+                    "ratio": float("nan"),
+                })
+                continue
             kl_key = f"kl_{substitute}"
             act_kl = np.mean(act[kl_key])
             rnd_kl = np.mean(rnd[kl_key])
@@ -159,9 +178,30 @@ def substitute_comparison(
     for cat, data in sorted(abl.items()):
         sets = data.get("joint", {}).get("sets", {})
         if set_key not in sets:
+            for layer in _layer_names(abl):
+                rows.append({
+                    "category": cat,
+                    "layer": layer,
+                    "n_dirs": 0,
+                    "kl_zero": 0.0,
+                    "kl_cat": 0.0,
+                    "kl_global": 0.0,
+                    "kl_rand": 0.0,
+                })
             continue
         for layer in sets[set_key]:
             s = sets[set_key][layer]
+            if s.get("n_directions", 0) == 0:
+                rows.append({
+                    "category": cat,
+                    "layer": layer,
+                    "n_dirs": 0,
+                    "kl_zero": 0.0,
+                    "kl_cat": 0.0,
+                    "kl_global": 0.0,
+                    "kl_rand": 0.0,
+                })
+                continue
             rows.append({
                 "category": cat,
                 "layer": layer,
@@ -295,8 +335,30 @@ def gold_prob_summary(
             set_key = f"active_{threshold}"
             sets = data.get("joint", {}).get("sets", {})
             if set_key not in sets:
+                for layer in _layer_names(abl):
+                    rows.append({
+                        "category": cat,
+                        "layer": layer,
+                        "mean": float("nan"),
+                        "median": float("nan"),
+                        "std": float("nan"),
+                        "q25": float("nan"),
+                        "q75": float("nan"),
+                        "min": float("nan"),
+                        "max": float("nan"),
+                        "n_images": 0,
+                    })
                 continue
             for layer in sets[set_key]:
+                if sets[set_key][layer].get("n_directions", 0) == 0:
+                    rows.append({
+                        "category": cat, "layer": layer,
+                        "mean": float("nan"), "median": float("nan"),
+                        "std": float("nan"), "q25": float("nan"),
+                        "q75": float("nan"), "min": float("nan"),
+                        "max": float("nan"), "n_images": 0,
+                    })
+                    continue
                 vals = np.array(sets[set_key][layer][key])
                 rows.append(_dist_row(cat, layer, _convert(vals)))
         elif group_by == "direction":
@@ -827,7 +889,31 @@ def kl_budget(
         for cat, data in sorted(abl.items()):
             total = data.get("total")
             sets = data.get("joint", {}).get("sets", {})
-            if total is None or set_key not in sets:
+            if total is None:
+                continue
+            if set_key not in sets:
+                for layer in _layer_names(abl):
+                    if layer not in total.get("layers", {}):
+                        continue
+                    budget_kl = np.array(total["layers"][layer][budget_key])
+                    zero_kl = np.array(total["layers"][layer]["kl_zero"])
+                    global_kl = np.array(total["layers"][layer]["kl_global"])
+                    n_total = total["n_directions"][layer]
+                    rows.append({
+                        "category": cat,
+                        "layer": layer,
+                        "n_active": 0,
+                        "n_total": n_total,
+                        "dir_frac": 0.0,
+                        "active_kl": 0.0,
+                        "budget_kl": budget_kl.mean(),
+                        "budget_frac": 0.0,
+                        "efficiency": float("nan"),
+                        "spoofing_ratio": zero_kl.mean() / global_kl.mean() if global_kl.mean() > 0 else float("inf"),
+                        "per_image_median": float("nan"),
+                        "per_image_q25": float("nan"),
+                        "per_image_q75": float("nan"),
+                    })
                 continue
 
             for layer in sets[set_key]:
@@ -835,13 +921,31 @@ def kl_budget(
                     continue
 
                 act = sets[set_key][layer]
-                act_kl = np.array(act[kl_key])
                 budget_kl = np.array(total["layers"][layer][budget_key])
                 zero_kl = np.array(total["layers"][layer]["kl_zero"])
                 global_kl = np.array(total["layers"][layer]["kl_global"])
-
-                n_active = act["n_directions"]
                 n_total = total["n_directions"][layer]
+
+                if act.get("n_directions", 0) == 0:
+                    rows.append({
+                        "category": cat,
+                        "layer": layer,
+                        "n_active": 0,
+                        "n_total": n_total,
+                        "dir_frac": 0.0,
+                        "active_kl": 0.0,
+                        "budget_kl": budget_kl.mean(),
+                        "budget_frac": 0.0,
+                        "efficiency": float("nan"),
+                        "spoofing_ratio": zero_kl.mean() / global_kl.mean() if global_kl.mean() > 0 else float("inf"),
+                        "per_image_median": float("nan"),
+                        "per_image_q25": float("nan"),
+                        "per_image_q75": float("nan"),
+                    })
+                    continue
+
+                act_kl = np.array(act[kl_key])
+                n_active = act["n_directions"]
                 dir_frac = n_active / n_total
 
                 act_mean = act_kl.mean()
