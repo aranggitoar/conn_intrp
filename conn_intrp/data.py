@@ -1,7 +1,7 @@
 """
 Dataset loading and evaluation metrics.
 
-Handles DocVQA and other future dataset loading with per-category grouping,
+Handles DocVQA and OK-VQA dataset loading with per-category grouping,
 and provides ANLS (Averaged Normalized Levenshtein Similarity) scoring
 functions.
 
@@ -56,6 +56,64 @@ def load_docvqa(json_path: str, seed: int = 99) -> tuple[list, dict]:
             categorized[t].append(datum)
 
     return dataset["data"], categorized
+
+
+def load_okvqa(
+    questions_path: str,
+    annotations_path: str,
+    seed: int = 99,
+) -> tuple[list, dict]:
+    """
+    Load and shuffle the OK-VQA dataset, grouped by knowledge category.
+
+    Joins the separate questions and annotations files by ``question_id``,
+    normalises each entry to the same dict format used by :func:`load_docvqa`
+    (``image``, ``question``, ``answers`` keys).
+
+    :param questions_path: Path to the questions JSON
+        (``OpenEnded_mscoco_*_questions.json``)
+    :type questions_path: str
+    :param annotations_path: Path to the annotations JSON
+        (``mscoco_*_annotations.json``)
+    :type annotations_path: str
+    :param seed: Random seed for reproducible shuffling
+    :type seed: int
+    :returns: ``(all_data, categorized)`` where *categorized* maps
+        knowledge category name to a list of data dicts
+    :rtype: tuple[list, dict]
+    """
+    with open(questions_path) as f:
+        q_data = json.load(f)
+    with open(annotations_path) as f:
+        a_data = json.load(f)
+
+    ann_by_qid = {a["question_id"]: a for a in a_data["annotations"]}
+    qt_names = a_data.get("question_types", {})
+    data_subtype = q_data.get("data_subtype", "train2014")
+
+    all_data = []
+    for q in q_data["questions"]:
+        qid = q["question_id"]
+        ann = ann_by_qid[qid]
+        qt_code = ann["question_type"]
+        datum = {
+            "questionId": qid,
+            "question": q["question"],
+            "image": f"{data_subtype}/COCO_{data_subtype}_{q['image_id']:012d}.jpg",
+            "answers": [a["answer"] for a in ann["answers"]],
+            "question_type": qt_names.get(qt_code, qt_code),
+        }
+        all_data.append(datum)
+
+    random.seed(seed)
+    random.shuffle(all_data)
+
+    categories = {d["question_type"] for d in all_data}
+    categorized = {cat: [] for cat in categories}
+    for datum in all_data:
+        categorized[datum["question_type"]].append(datum)
+
+    return all_data, categorized
 
 
 def relaxed_anls(pred: str, gt: str, tau: float = 0.5) -> float:
@@ -128,6 +186,17 @@ DATASETS = {
         "default_path": "dataset/docVQA",
         "train": lambda p: load_docvqa(p / "train_v1.0_withQT.json"),
         "val": lambda p: load_docvqa(p / "val_v1.0_withQT.json"),
+    },
+    "okvqa": {
+        "default_path": "dataset/OK-VQA",
+        "train": lambda p: load_okvqa(
+            p / "OpenEnded_mscoco_train2014_questions.json",
+            p / "mscoco_train2014_annotations.json",
+        ),
+        "val": lambda p: load_okvqa(
+            p / "OpenEnded_mscoco_val2014_questions.json",
+            p / "mscoco_val2014_annotations.json",
+        ),
     },
 }
 

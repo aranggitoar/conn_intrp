@@ -4,6 +4,7 @@ Mechanistic interpretability of cross-modal connectors in VLMs.
 Pipelines:
 - Directional masking, learn per-direction importance masks
 - Mean ablation, replace directions with mean then measure difference
+- Interchange intervention, swap connector outputs between paired images
 - Spatial probe, visualize direction activation patterns
 
 Example::
@@ -29,6 +30,8 @@ Main Functions:
     probe_selectivity_table: Per-direction spatial selectivity summary
     probe_ablation_cross: Cross-reference spatial selectivity with ablation KL
     probe_direction_clusters: Pairwise spatial similarity and cluster assignment
+    run_interchange: Swap connector outputs and measure response
+    load_interchange: Load results from an interchange run
 """
 
 from .ablation import (
@@ -60,6 +63,7 @@ from .data import (
     filter_categories,
     load_dataset,
     load_docvqa,
+    load_okvqa,
     relaxed_anls,
 )
 from .dm import evaluate_dm_baselines, evaluate_mask_kl, evaluate_masks_kl, run_dm
@@ -97,6 +101,20 @@ from .output import (
     save_json,
     update_metadata,
 )
+from .interchange import (
+    coefficient_diagnostic,
+    load_image_pairs,
+    prepare_interchange_items,
+    run_interchange,
+)
+from .interchange_analysis import (
+    load_interchange,
+    margins as interchange_margins,
+    failure_decomposition as interchange_failure_decomposition,
+    significance as interchange_significance,
+    direction_asymmetry as interchange_direction_asymmetry,
+    comparison_table as interchange_comparison_table,
+)
 from .spatial_probe import run_spatial_probe
 
 __all__ = [
@@ -106,6 +124,7 @@ __all__ = [
     "DATASETS",
     "load_dataset",
     "load_docvqa",
+    "load_okvqa",
     "HARNESS_PROMPT",
     "best_anls",
     "relaxed_anls",
@@ -167,4 +186,16 @@ __all__ = [
     "probe_selectivity_table",
     "probe_ablation_cross",
     "probe_direction_clusters",
+    # interchange
+    "coefficient_diagnostic",
+    "load_image_pairs",
+    "prepare_interchange_items",
+    "run_interchange",
+    # interchange analysis
+    "load_interchange",
+    "interchange_margins",
+    "interchange_failure_decomposition",
+    "interchange_significance",
+    "interchange_direction_asymmetry",
+    "interchange_comparison_table",
 ]
